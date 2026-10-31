@@ -50,15 +50,18 @@ PY_DIR="$HOME/domains/$DOMAIN/public_python"
 ENV_FILE="$PY_DIR/.env"
 
 # 脚本自身的绝对路径（要在任何 cd 之前记下来，快捷方式创建时用）
+# 注意：用 bash <(curl ...) 这种进程替换方式运行时，$0 是 bash，根本不是脚本文件，
+# 所以下面 setup_shortcut 不能只靠 cp "$SCRIPT_PATH"，必须有下载兜底
 SCRIPT_PATH="$0"
 if [[ "$SCRIPT_PATH" != /* ]]; then
     SCRIPT_PATH="$PWD/$SCRIPT_PATH"
 fi
+SCRIPT_URL="https://raw.githubusercontent.com/djkyc/s5/refs/heads/main/os.sh"
 
 # ---------------- 菜单 ----------------
 menu() {
     echo "———————————————————————"
-    echo "此脚本由by:𝑺𝒆𝒓𝒐𝒌𝑽𝒊𝒑 二次改编Djkyc"
+    echo "此脚本由by:SeroKvip 二次改编Djkyc"
     echo "请选择操作："
     echo "1) 一键安装"
     echo "2) 端口管理"
@@ -332,17 +335,37 @@ setup_shortcut() {
     local DST="$HOME/s5.sh"
     mkdir -p "$HOME/bin"
 
-    # 把当前这份脚本固定存到 $HOME/s5.sh，避免原下载文件被删后快捷方式失效
+    # 1) 先拿到一份真实的脚本存到 $HOME/s5.sh
+    #    情况 A：正常文件运行（bash s5.sh、./s5.sh、或已通过 s5 呼出），直接复制
+    #    情况 B：bash <(curl ...) 进程替换运行，$0 根本不是文件，复制必然失败，
+    #            必须重新从仓库下载一份，否则会像之前那样假装成功、实际没有 s5.sh
     if [[ -f "$SCRIPT_PATH" && "$SCRIPT_PATH" != "$DST" ]]; then
         cp "$SCRIPT_PATH" "$DST" 2>/dev/null || true
     fi
+    if [[ ! -s "$DST" ]]; then
+        echo "ℹ️ 当前不是文件运行，正在从仓库下载脚本到 $DST ..."
+        if command -v curl >/dev/null 2>&1; then
+            curl -Ls "$SCRIPT_URL" -o "$DST" 2>/dev/null || true
+        fi
+        if [[ ! -s "$DST" ]] && command -v wget >/dev/null 2>&1; then
+            wget -q -O "$DST" "$SCRIPT_URL" 2>/dev/null || true
+        fi
+    fi
     chmod +x "$DST" 2>/dev/null || true
+
+    # 2) 校验：没有真实文件就不要谎报成功
+    if [[ ! -s "$DST" ]]; then
+        echo "❌ 快捷方式创建失败：无法获取脚本文件，请检查网络或手动下载后选 7 重试"
+        return 1
+    fi
 
     # ~/bin/s5 -> $HOME/s5.sh，s5 本身就是可执行脚本
     ln -sf "$DST" "$HOME/bin/s5"
 
     # 让以后登录的 shell 都能找到 ~/bin
-    for RC in "$HOME/.bashrc" "$HOME/.profile"; do
+    # bash 登录 shell 只读第一个找到的 .bash_profile/.bash_login/.profile，
+    # 所以只写 .bashrc + .profile 不够，必须把 .bash_profile 也写上
+    for RC in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
         touch "$RC" 2>/dev/null || continue
         if ! grep -q 'HOME/bin' "$RC" 2>/dev/null; then
             printf '\nexport PATH="$HOME/bin:$PATH"\n' >> "$RC"
@@ -350,7 +373,13 @@ setup_shortcut() {
     done
     export PATH="$HOME/bin:$PATH"
 
-    echo "✅ 快捷方式已创建：下次登录后直接输入 s5 即可呼出菜单"
+    if [[ -x "$HOME/bin/s5" ]]; then
+        echo "✅ 快捷方式已创建：$HOME/bin/s5 -> $DST"
+        echo "✅ 下次登录后直接输入 s5 即可呼出菜单"
+    else
+        echo "❌ 快捷方式创建失败：$HOME/bin/s5 不可执行"
+        return 1
+    fi
     echo "ℹ️ 子脚本改不了父终端的 PATH，所以本次当前终端如还提示找不到 s5，请先执行 source ~/.bashrc 或重新登录一次"
 }
 
@@ -479,6 +508,13 @@ uninstall_service() {
     if [[ -n "$PID" ]]; then
         kill -9 $PID
         echo "✅ 已杀掉 PID $PID"
+    fi
+
+    # 一键卸载后快捷方式也跟着没有：只删链接，不删 $HOME/s5.sh 本体，
+    # 这样以后想重装还能 bash ~/s5.sh，而直接输 s5 会提示 command not found
+    if [[ -e "$HOME/bin/s5" ]]; then
+        rm -f "$HOME/bin/s5"
+        echo "✅ 已删除 s5 快捷方式（$HOME/bin/s5）"
     fi
 
     echo "✅ 卸载完成"
