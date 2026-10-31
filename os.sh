@@ -58,6 +58,7 @@ fi
 # ---------------- 菜单 ----------------
 menu() {
     echo "———————————————————————"
+    echo "此脚本由by:𝑺𝒆𝒓𝒐𝒌𝑽𝒊𝒑 二次改编Djkyc"
     echo "请选择操作："
     echo "1) 一键安装"
     echo "2) 端口管理"
@@ -445,6 +446,12 @@ show_service() {
     echo "端口：$PORT"
     echo "账号：$USER"
     echo "密码：$PASS"
+    echo "———————————————————————"
+    echo "一键复制格式："
+    echo "socks5://$USER:$PASS@$PUBLIC_IP:$PORT"
+    echo "$PUBLIC_IP:$PORT:$USER:$PASS"
+    echo "Telegram 代理链接："
+    echo "https://t.me/socks?server=$PUBLIC_IP&port=$PORT&user=$USER&pass=$PASS"
     echo "———————————————————————"
     read -p "按回车返回主菜单..."
 }
