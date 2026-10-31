@@ -49,6 +49,12 @@ fi
 PY_DIR="$HOME/domains/$DOMAIN/public_python"
 ENV_FILE="$PY_DIR/.env"
 
+# 脚本自身的绝对路径（要在任何 cd 之前记下来，快捷方式创建时用）
+SCRIPT_PATH="$0"
+if [[ "$SCRIPT_PATH" != /* ]]; then
+    SCRIPT_PATH="$PWD/$SCRIPT_PATH"
+fi
+
 # ---------------- 菜单 ----------------
 menu() {
     echo "———————————————————————"
@@ -58,6 +64,9 @@ menu() {
     echo "3) 配置修改"
     echo "4) 查看服务"
     echo "5) 一键卸载"
+    echo "6) 重启服务"
+    echo "7) 创建 s5 快捷方式"
+    echo "0) 退出"
     read -p "输入序号: " choice
 }
 
@@ -82,6 +91,7 @@ install_service() {
     if [[ -n "$EXIST_DOMAIN" ]]; then
         if [[ -d "$PY_DIR" && -f "$PY_DIR/get.py" && -f "$PY_DIR/s5.enc" ]]; then
             echo "✅ 服务已安装，无需重复安装"
+            setup_shortcut
             show_service
             return
         else
@@ -185,8 +195,11 @@ EOF
     if ! pgrep -f "python3 $PY_DIR/get.py" >/dev/null 2>&1; then
         X "启动后台服务" "nohup python3 get.py >/dev/null 2>&1 &"
     fi
-    
+
     sleep 5
+
+    # 装过一次就创建快捷方式，下次直接输入 s5 即可呼出菜单
+    setup_shortcut
 
     # 安装完成后显示服务信息
     show_service
@@ -229,13 +242,13 @@ port_manager() {
                             kill -9 $PID
                         fi
                         sleep 3
-                        
+
                         cd "$PY_DIR" || exit
                         nohup python3 get.py >/dev/null 2>&1 </dev/null &
                         disown
-                        
+
                         sleep 5
-                        
+
                         echo "✅ 已重启服务"
                         break
                     else
@@ -293,26 +306,109 @@ config_modify() {
         read -p "请输入新的 密码: " INPUT_P
         S_P=$(echo -n "$INPUT_P" | base64)
         sed -i '' "s|^S_P=.*|S_P=$S_P|" "$ENV_FILE"
-        
+
         # 精准重启 systemd-journald 相关 Python 服务
         PID=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}')
         if [[ -n "$PID" ]]; then
             kill -9 $PID
         fi
-        
+
         sleep 3
-        
+
         cd "$PY_DIR" || exit
         nohup python3 get.py >/dev/null 2>&1 </dev/null &
         disown
         echo "✅ 已重启服务"
     fi
-    
+
     sleep 5
 
     read -p "按回车返回主菜单..."
 }
 
+# ---------------- 创建 s5 快捷方式 ----------------
+setup_shortcut() {
+    local DST="$HOME/s5.sh"
+    mkdir -p "$HOME/bin"
+
+    # 把当前这份脚本固定存到 $HOME/s5.sh，避免原下载文件被删后快捷方式失效
+    if [[ -f "$SCRIPT_PATH" && "$SCRIPT_PATH" != "$DST" ]]; then
+        cp "$SCRIPT_PATH" "$DST" 2>/dev/null || true
+    fi
+    chmod +x "$DST" 2>/dev/null || true
+
+    # ~/bin/s5 -> $HOME/s5.sh，s5 本身就是可执行脚本
+    ln -sf "$DST" "$HOME/bin/s5"
+
+    # 让以后登录的 shell 都能找到 ~/bin
+    for RC in "$HOME/.bashrc" "$HOME/.profile"; do
+        touch "$RC" 2>/dev/null || continue
+        if ! grep -q 'HOME/bin' "$RC" 2>/dev/null; then
+            printf '\nexport PATH="$HOME/bin:$PATH"\n' >> "$RC"
+        fi
+    done
+    export PATH="$HOME/bin:$PATH"
+
+    echo "✅ 快捷方式已创建：下次登录后直接输入 s5 即可呼出菜单"
+    echo "ℹ️ 子脚本改不了父终端的 PATH，所以本次当前终端如还提示找不到 s5，请先执行 source ~/.bashrc 或重新登录一次"
+}
+
+# ---------------- 重启服务 ----------------
+restart_service() {
+    if [[ ! -f "$ENV_FILE" ]]; then
+        echo "❌ 服务未安装，先运行一键安装"
+        read -p "按回车返回主菜单..."
+        return
+    fi
+
+    if [[ ! -f "$PY_DIR/get.py" ]]; then
+        echo "❌ 找不到 $PY_DIR/get.py，先运行一键安装"
+        read -p "按回车返回主菜单..."
+        return
+    fi
+
+    echo "正在重启服务..."
+
+    # 先杀掉旧进程：先按原脚本的 systemd-journald 伪装名找，找不到再按 get.py 路径找
+    OLD_PIDS=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}')
+    if [[ -z "$OLD_PIDS" ]]; then
+        OLD_PIDS=$(pgrep -f "python3 $PY_DIR/get.py" || true)
+    fi
+
+    if [[ -n "$OLD_PIDS" ]]; then
+        for OLD_PID in $OLD_PIDS; do
+            kill -9 "$OLD_PID" 2>/dev/null || true
+        done
+        sleep 3
+    else
+        echo "ℹ️ 未检测到正在运行的旧进程，直接启动"
+    fi
+
+    # 用 return 而不是 exit：进不去目录也只回主菜单，不会把整个脚本退掉
+    cd "$PY_DIR" || {
+        echo "❌ 无法进入 $PY_DIR"
+        read -p "按回车返回主菜单..."
+        return
+    }
+    nohup python3 get.py >/dev/null 2>&1 </dev/null &
+    disown
+
+    sleep 5
+
+    # 校验：新进程确实起来了才算成功
+    NEW_PID=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}' | head -n1)
+    if [[ -z "$NEW_PID" ]]; then
+        NEW_PID=$(pgrep -f "python3 $PY_DIR/get.py" | head -n1 || true)
+    fi
+
+    if [[ -n "$NEW_PID" ]]; then
+        echo "✅ 重启成功，运行中 (PID: $NEW_PID)"
+    else
+        echo "❌ 重启失败，进程未检测到，请检查 $PY_DIR/get.py 和 $ENV_FILE"
+    fi
+
+    read -p "按回车返回主菜单..."
+}
 
 # ---------------- 查看服务 ----------------
 show_service() {
@@ -321,7 +417,7 @@ show_service() {
         read -p "按回车返回主菜单..."
         return
     fi
-    
+
     # 小工具函数，读取 .env 中的值（保留 Base64 的 '='）
     env_get() {
         sed -n "s/^$1=//p" "$ENV_FILE" | head -n1
@@ -371,7 +467,7 @@ uninstall_service() {
     if [[ -n "$S5_PORT" ]]; then
         X "删除 s5 端口 ($S5_PORT)" "devil port del tcp $S5_PORT"
     fi
-    
+
     PID=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}')
     if [[ -n "$PID" ]]; then
         kill -9 $PID
@@ -382,7 +478,6 @@ uninstall_service() {
     read -p "按回车返回主菜单..."
 }
 
-
 # ---------------- 主循环 ----------------
 while true; do
     menu
@@ -392,6 +487,9 @@ while true; do
         3) config_modify ;;
         4) show_service ;;
         5) uninstall_service ;;
+        6) restart_service ;;
+        7) setup_shortcut; read -p "按回车返回主菜单..." ;;
+        0) echo "👋 已退出"; break ;;
         *) echo "无效选择" ;;
     esac
 done
