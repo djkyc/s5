@@ -204,7 +204,12 @@ done
 EOF
 
 # 赋予执行权限并同步更新全局命令
+mkdir -p "$HOME/bin"
 chmod +x m.sh
-cp m.sh ~/bin/muse
-chmod +x ~/bin/muse
+cp -f m.sh "$HOME/bin/muse"
+chmod +x "$HOME/bin/muse"
 export PATH="$HOME/bin:$PATH"
+
+# 生成完毕，直接启动管理面板（FreeBSD 自带 sh 不支持 read -p，必须用 bash）
+echo "管理脚本已就绪，正在启动控制面板..."
+exec bash ./m.sh
