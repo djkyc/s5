@@ -1,4 +1,4 @@
-cat << 'EOF' > m.sh
+cat << 'EOF' >os.sh
 #!/bin/sh
 
 # ====================================================================
@@ -289,6 +289,29 @@ do_setup() {
             echo -e "${YELLOW}请稍后在 Serv00 面板手动添加 Proxy 类型网站：域名 $DOMAIN，目标 127.0.0.1:$TCP_PORT${NC}"
         fi
     fi
+
+    # ---- SSL 证书：muse.xxx.serv00.net 这类两级子域名盖不住 Serv00 的共享通配符证书，
+    #      没有专属证书浏览器会一直报不安全；已有则跳过，没有就自动签一张 Let's Encrypt（免费、自动续期）
+    if [ "$DOMAIN_OK" = "1" ]; then
+        echo -e "${YELLOW}[*] 检查 $DOMAIN 的 SSL 证书...${NC}"
+        if devil ssl www list 2>/dev/null | grep -q "$DOMAIN"; then
+            echo -e "${GREEN}域名 $DOMAIN 已有专属 SSL 证书，跳过签发。${NC}"
+        else
+            CERT_IP=$(python3 -c "import socket;print(socket.gethostbyname('$DOMAIN'))" 2>/dev/null)
+            if [ -z "$CERT_IP" ]; then
+                echo -e "${YELLOW}[!] 域名 $DOMAIN 解析失败，跳过自动签发（可稍后在面板 SSL → WWW websites 中手动签发）。${NC}"
+            else
+                echo -e "${YELLOW}[*] 正在为 $DOMAIN 签发专属证书...${NC}"
+                OUT=$(devil ssl www add "$CERT_IP" le le "$DOMAIN" 2>&1)
+                if echo "$OUT" | grep -qi "ok\|success"; then
+                    echo -e "${GREEN}[+] SSL 证书签发成功，1-2 分钟后浏览器将显示绿锁。${NC}"
+                else
+                    echo -e "${YELLOW}[!] 自动签发失败，可稍后在面板 SSL → WWW websites 中手动签发：${NC}"
+                    echo "$OUT" | head -3
+                fi
+            fi
+        fi
+    fi
     else
         # ---- Linux VPS：无 devil，手动指定端口 / 监听地址 / 公网访问地址 ----
         echo -e "${YELLOW}[1/3] 服务端口...${NC}"
@@ -525,4 +548,4 @@ export PATH="$HOME/bin:$PATH"
 
 # 生成完毕，直接启动管理面板（FreeBSD 自带 sh 不支持 read -p，必须用 bash）
 echo "管理脚本已就绪，正在启动控制面板..."
-exec bash ./m.sh
+exec bash ./os.sh
