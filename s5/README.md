@@ -1,4 +1,5 @@
 # s5
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/s5/refs/heads/main/os.sh)
+```shell
+bash
+curl -Ls https://raw.githubusercontent.com/djkyc/s5/refs/heads/main/s5/os.sh -o ~/s5.sh && bash ~/s5.sh
 ```
