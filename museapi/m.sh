@@ -175,6 +175,11 @@ do_update() {
         echo -e "${RED}[✘] 目录不存在，请先安装！${NC}"
     else
         cd "$INSTALL_DIR" || exit 1
+        # 记住当前走的是哪条依赖路线（v1 纯 Python 还是常规 v2），更新后保持一致
+        PYDANTIC_V1=0
+        if venv/bin/python -c "import pydantic, sys; sys.exit(0 if pydantic.VERSION.startswith('1.') else 1)" 2>/dev/null; then
+            PYDANTIC_V1=1
+        fi
         git checkout -- requirements.txt app.py 2>/dev/null
         git pull --ff-only
         # 更新后重新应用 FreeBSD 兼容修改（uvloop 不支持 FreeBSD）
@@ -182,7 +187,14 @@ do_update() {
         . venv/bin/activate
         export CARGO_BUILD_JOBS=1
         export MAKEFLAGS="-j1"
-        pip install -r requirements.txt
+        if [ "$PYDANTIC_V1" = "1" ]; then
+            # 纯 Python 路线：重新打单行兼容补丁，跳过 pydantic>=2.9，避免再次触发 Rust 编译
+            sed -i '' 's/req\.model_dump(by_alias=True)/req.dict(by_alias=True)/' app.py
+            grep -v "^pydantic" requirements.txt > requirements.freebsd.txt
+            pip install -r requirements.freebsd.txt
+        else
+            pip install -r requirements.txt
+        fi
         echo -e "${GREEN}[✔] 代码更新完成！${NC}"
     fi
     read -p "按回车键返回主菜单..." dummy
