@@ -1,7 +1,7 @@
 cat << 'EOF' > install.sh
 #!/bin/bash
 
-# 颜色定义
+# Kolory
 GREEN="\033[32m"
 YELLOW="\033[33m"
 CYAN="\033[36m"
@@ -12,7 +12,7 @@ USERNAME=$(whoami)
 HOSTNAME=$(hostname)
 APP_DIR="$HOME/muse2api"
 
-# 自动识别平台 (Serv00 或 ct8)
+# Automatyczne rozpoznawanie platformy (Serv00 lub ct8)
 if [[ "$HOSTNAME" == *"ct8"* ]] || [ -d "/home/ct8" ] || command -v ct8 &>/dev/null; then
     PLATFORM="ct8"
     DOMAIN="muse.${USERNAME}.ct8.pl"
@@ -42,7 +42,6 @@ clean_old_files() {
     echo -e "${YELLOW}>>> 正在检测并清理旧版本残留及进程...${RESET}"
     pkill -f "uvicorn app:app" 2>/dev/null
     if [ -d "$APP_DIR" ]; then
-        # 保留用户可能的配置或直接全清（这里按要求清除旧文件重来）
         rm -rf "$APP_DIR"
         echo ">>> 旧目录 $APP_DIR 及残留文件已彻底清除。"
     fi
@@ -90,12 +89,7 @@ do_start() {
     cd "$APP_DIR"
     pkill -f "uvicorn app:app" 2>/dev/null
     
-    # 读取或者寻找端口
     PORT=18610
-    if [ -f "muse.log" ]; then
-        # 尝试从日志中提取上次的端口或重新扫
-        PORT=18610
-    fi
     while netstat -an 2>/dev/null | grep -q ":$PORT "; do
         PORT=$((PORT + 1))
     done
@@ -117,7 +111,7 @@ do_logs() {
         echo -e "${RED}❌ 暂无日志文件。${RESET}"
         read -p "按回车键返回主菜单..."
         return
-    }
+    fi
     echo -e "${CYAN}--- 正在查看实时日志 (按 Ctrl+C 退出查看) ---${RESET}"
     tail -f "$APP_DIR/muse.log"
 }
@@ -128,14 +122,13 @@ do_uninstall() {
     if [ "$confirm" == "y" ]; then
         pkill -f "uvicorn app:app" 2>/dev/null
         rm -rf "$APP_DIR"
-        # 尝试在面板中删除域名反代
         devil www del "$DOMAIN" 2>/dev/null
         echo -e "${GREEN}🗑️ 已彻底卸载并清除干净。${RESET}"
     fi
     read -p "按回车键返回主菜单..."
 }
 
-# 主循环
+# Główna pętla menu
 while true; do
     show_banner
     read -p "请选择操作编号 [0-5]: " choice
