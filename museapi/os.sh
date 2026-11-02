@@ -1,7 +1,6 @@
 cat << 'EOF' > install.sh
 #!/bin/bash
 
-# 颜色
 GREEN="\033[32m"
 YELLOW="\033[33m"
 CYAN="\033[36m"
@@ -12,7 +11,6 @@ USERNAME=$(whoami)
 HOSTNAME=$(hostname)
 APP_DIR="$HOME/muse2api"
 
-# 自动识别平台 (Serv00 或 ct8)
 if [[ "$HOSTNAME" == *"ct8"* ]] || [ -d "/home/ct8" ] || command -v ct8 &>/dev/null; then
     PLATFORM="ct8"
     DOMAIN="muse.${USERNAME}.ct8.pl"
@@ -55,36 +53,29 @@ do_install() {
     cd "$APP_DIR"
 
     echo -e "${GREEN}>>> [2/5] 正在寻找未被占用的空闲端口...${RESET}"
-    PORT=18610
+    # 在 ct8 上从 19000 开始找，避免和默认低端口冲突
+    PORT=19010
     while netstat -an 2>/dev/null | grep -q ":$PORT "; do
         PORT=$((PORT + 1))
     done
     echo ">>> 已自动分配空闲端口: $PORT"
 
-    echo -e "${GREEN}>>> [3/5] 正在配置 Python 3.11 虚拟环境...${RESET}"
+    echo -e "${GREEN}>>> [3/5] 正在配置 Python 虚拟环境并安装纯二进制依赖...${RESET}"
     python3.11 -m venv venv || python3 -m venv venv
     . venv/bin/activate
     pip install --upgrade pip
-    pip install fastapi uvicorn pydantic requests
+    
+    # 使用稳定且不需要本地 Rust 编译的版本，防止爆错
+    pip install fastapi uvicorn requests
+    pip install pydantic --only-binary=:all: 2>/dev/null || pip install pydantic
 
     echo -e "${GREEN}>>> [4/5] 正在启动后端服务 (Bykyc 守护中)...${RESET}"
     nohup venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port "$PORT" > muse.log 2>&1 &
     echo ">>> 服务已在后台成功运行，PID: $!"
 
-    echo -e "${GREEN}>>> [5/5] 正在自动配置 $PLATFORM 面板反向代理...${RESET}"
-    if [ "$PLATFORM" == "ct8" ]; then
-        # ct8 平台的正确反代绑定命令：参数为 proxy 以及目标端口
-        devil www del "$DOMAIN" 2>/dev/null
-        devil www add "$DOMAIN" proxy localhost "$PORT" 2>/dev/null
-    else
-        # Serv00 平台反代命令
-        devil www del "$DOMAIN" 2>/dev/null
-        devil www add "$DOMAIN" proxy 127.0.0.1 "$PORT" 2>/dev/null
-    fi
-
-    echo -e "\n${GREEN}🎉 [Bykyc] 安装与部署全部完成！${RESET}"
-    echo -e "👉 访问地址: ${YELLOW}http://$DOMAIN${RESET}"
+    echo -e "\n${GREEN}🎉 [Bykyc] 安装与部署核心完成！${RESET}"
     echo -e "👉 监听端口: ${YELLOW}$PORT${RESET}"
+    echo -e "${YELLOW}提示: ct8 平台请前往网页后台 (panel.ct8.pl -> Strony WWW) 将域名 $DOMAIN 绑定为 proxy 类型，目标端口填 $PORT 即可！${RESET}"
     read -p "按回车键返回主菜单..."
 }
 
@@ -97,7 +88,7 @@ do_start() {
     cd "$APP_DIR"
     pkill -f "uvicorn app:app" 2>/dev/null
     
-    PORT=18610
+    PORT=19010
     while netstat -an 2>/dev/null | grep -q ":$PORT "; do
         PORT=$((PORT + 1))
     done
@@ -130,13 +121,11 @@ do_uninstall() {
     if [ "$confirm" == "y" ]; then
         pkill -f "uvicorn app:app" 2>/dev/null
         rm -rf "$APP_DIR"
-        devil www del "$DOMAIN" 2>/dev/null
         echo -e "${GREEN}🗑️ 已彻底卸载并清除干净。${RESET}"
     fi
     read -p "按回车键返回主菜单..."
 }
 
-# 主循环菜单
 while true; do
     show_banner
     read -p "请选择操作编号 [0-5]: " choice
