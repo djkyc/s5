@@ -65,14 +65,22 @@ do_install() {
     python3.11 -m venv venv || python3 -m venv venv
     . venv/bin/activate
     pip install --upgrade pip
-    pip install fastapi uvicorn pydantic requests playwright
+    pip install fastapi uvicorn pydantic requests
 
     echo -e "${GREEN}>>> [4/5] 正在启动后端服务 (Bykyc 守护中)...${RESET}"
     nohup venv/bin/python -m uvicorn app:app --host 0.0.0.0 --port "$PORT" > muse.log 2>&1 &
     echo ">>> 服务已在后台成功运行，PID: $!"
 
     echo -e "${GREEN}>>> [5/5] 正在自动配置 $PLATFORM 面板反向代理...${RESET}"
-    devil www add "$DOMAIN" proxy 127.0.0.1 "$PORT" 2>/dev/null
+    if [ "$PLATFORM" == "ct8" ]; then
+        # ct8 平台的正确反代绑定命令：参数为 proxy 以及目标端口
+        devil www del "$DOMAIN" 2>/dev/null
+        devil www add "$DOMAIN" proxy localhost "$PORT" 2>/dev/null
+    else
+        # Serv00 平台反代命令
+        devil www del "$DOMAIN" 2>/dev/null
+        devil www add "$DOMAIN" proxy 127.0.0.1 "$PORT" 2>/dev/null
+    fi
 
     echo -e "\n${GREEN}🎉 [Bykyc] 安装与部署全部完成！${RESET}"
     echo -e "👉 访问地址: ${YELLOW}http://$DOMAIN${RESET}"
@@ -144,6 +152,5 @@ while true; do
 done
 EOF
 
-# 赋予执行权限并直接运行
 chmod +x install.sh
 ./install.sh
