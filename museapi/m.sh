@@ -55,11 +55,19 @@ do_install() {
 
     cd "$INSTALL_DIR" || exit 1
 
+    # Serv00/FreeBSD 兼容：uvicorn[standard] 中的 uvloop 不支持 FreeBSD，去掉 extras
+    [ -f requirements.txt ] && sed -i '' 's/uvicorn\[standard\]/uvicorn/' requirements.txt
+
     echo -e "${YELLOW}[*] 创建 Python 3.11 虚拟环境...${NC}"
     python3.11 -m venv venv
 
     echo -e "${YELLOW}[*] 正在安装 Python 依赖库...${NC}"
     . venv/bin/activate
+    # Serv00 进程数受限，且 FreeBSD 没有 pydantic-core 预编译包，必须从源码编译 Rust：
+    # 限制并行度，否则编译中途会报 Resource temporarily unavailable
+    export CARGO_BUILD_JOBS=1
+    export MAKEFLAGS="-j1"
+    echo -e "${YELLOW}[!] Rust 源码编译较慢（约 30~60 分钟），请耐心等待，不要中断。${NC}"
     pip install --upgrade pip
     pip install -r requirements.txt
 
@@ -145,8 +153,13 @@ do_update() {
         echo -e "${RED}[✘] 目录不存在，请先安装！${NC}"
     else
         cd "$INSTALL_DIR" || exit 1
+        git checkout -- requirements.txt 2>/dev/null
         git pull --ff-only
+        # 更新后重新应用 FreeBSD 兼容修改（uvloop 不支持 FreeBSD）
+        [ -f requirements.txt ] && sed -i '' 's/uvicorn\[standard\]/uvicorn/' requirements.txt
         . venv/bin/activate
+        export CARGO_BUILD_JOBS=1
+        export MAKEFLAGS="-j1"
         pip install -r requirements.txt
         echo -e "${GREEN}[✔] 代码更新完成！${NC}"
     fi
