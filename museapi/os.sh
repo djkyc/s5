@@ -2,7 +2,7 @@ cat << 'EOF' > m.sh
 #!/bin/sh
 
 # ====================================================================
-#  Muse2API Serv00 (FreeBSD) 全自动一键部署与管理脚本Djkyc
+#  Muse2API 全自动一键部署与管理脚本（Serv00/ct8 的 FreeBSD，Ubuntu/Debian 的 Linux）
 # ====================================================================
 
 RED='\033[0;31m'
@@ -52,6 +52,31 @@ PYEOF
     fi
 }
 
+# 查找正在运行的 muse2api 进程 PID（排除僵尸进程，避免把已死的进程误判为运行中）
+muse_pids() {
+    for p in $(pgrep -f "uvicorn app:app" 2>/dev/null); do
+        ps -o pid,stat -p "$p" 2>/dev/null | awk 'NR==2 && $2 !~ /^Z/ {print $1}'
+    done
+}
+
+# 系统识别：FreeBSD + devil 命令 = Serv00/ct8 这类共享主机；Linux = Ubuntu/Debian VPS
+OS_TYPE=$(uname -s)
+has_devil() { [ "$OS_TYPE" = "FreeBSD" ] && command -v devil >/dev/null 2>&1; }
+
+# 按主机名自动识别运行商（Serv00 / ct8），决定默认域名后缀与面板地址
+detect_provider() {
+    HOSTNAME=$(hostname -f 2>/dev/null || hostname 2>/dev/null)
+    case "$HOSTNAME" in
+        *ct8.pl*)
+            PROVIDER="ct8"; SUFFIX="ct8.pl"; PANEL="https://panel.ct8.pl" ;;
+        *serv00.com*)
+            PROVIDER="serv00"; SUFFIX="serv00.net"; PANEL="https://panel.serv00.com" ;;
+        *)
+            PROVIDER="serv00"; SUFFIX="serv00.net"; PANEL="https://panel.serv00.com"
+            echo -e "${YELLOW}[!] 无法识别主机（$HOSTNAME），默认按 Serv00 处理。${NC}" ;;
+    esac
+}
+
 # 全自动安装/重装
 do_install() {
     echo -e "${BLUE}=== 开始全自动拉取与配置 muse2api ===${NC}"
@@ -59,10 +84,12 @@ do_install() {
     # 如果目录存在但坏了，自动清理重建
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}[*] 检测到旧目录，正在清理旧版本...${NC}"
-        OLD_PID=$(pgrep -f "python -m uvicorn app:app")
-        [ -n "$OLD_PID" ] && kill -9 $OLD_PID
+        PIDS=$(muse_pids)
+        [ -n "$PIDS" ] && kill -9 $PIDS
         rm -rf "$INSTALL_DIR"
     fi
+
+    command -v git >/dev/null 2>&1 || { echo -e "${RED}[✘] 没找到 git，Debian/Ubuntu 请先执行：sudo apt install git${NC}"; read -p "按回车键返回主菜单..." dummy; return 1; }
 
     echo -e "${YELLOW}[*] 正在从 GitHub 官方仓库克隆源码...${NC}"
     git clone https://github.com/czg86389-hub/muse2api.git "$INSTALL_DIR"
@@ -77,8 +104,16 @@ do_install() {
     # Serv00/FreeBSD 兼容：uvicorn[standard] 中的 uvloop 不支持 FreeBSD，去掉 extras
     [ -f requirements.txt ] && sed -i '' 's/uvicorn\[standard\]/uvicorn/' requirements.txt
 
-    echo -e "${YELLOW}[*] 创建 Python 3.11 虚拟环境...${NC}"
-    python3.11 -m venv venv
+    echo -e "${YELLOW}[*] 创建 Python 虚拟环境...${NC}"
+    PYBIN="$(command -v python3.11 || command -v python3)"
+    if [ -z "$PYBIN" ]; then
+        echo -e "${RED}[✘] 没找到 python3，请先安装 Python 3。${NC}"
+        read -p "按回车键返回主菜单..." dummy; return 1
+    fi
+    if ! "$PYBIN" -m venv venv; then
+        echo -e "${RED}[✘] 虚拟环境创建失败。Debian/Ubuntu 请先执行：sudo apt install python3-venv${NC}"
+        read -p "按回车键返回主菜单..." dummy; return 1
+    fi
 
     echo -e "${YELLOW}[*] 正在安装 Python 依赖库...${NC}"
     . venv/bin/activate
@@ -140,18 +175,22 @@ do_start() {
 
     cd "$INSTALL_DIR" || exit 1
 
-    # 端口优先使用 .env 中的 MUSE2API_PORT（选项5向导写入），回退到脚本默认值
+    # 端口与监听地址优先使用 .env 中的配置（选项2向导写入），回退到脚本默认值
     ENV_PORT=$(grep -E '^MUSE2API_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d ' \r')
     [ -n "$ENV_PORT" ] && PORT="$ENV_PORT"
+    ENV_HOST=$(grep -E '^MUSE2API_HOST=' .env 2>/dev/null | cut -d= -f2 | tr -d ' \r')
+    HOST=127.0.0.1
+    [ -n "$ENV_HOST" ] && HOST="$ENV_HOST"
 
-    if pgrep -f "python -m uvicorn app:app" > /dev/null; then
-        echo -e "${YELLOW}[!] 检测到 muse2api 已经在后台运行中。${NC}"
+    RUN_PID=$(muse_pids)
+    if [ -n "$RUN_PID" ]; then
+        echo -e "${YELLOW}[!] 检测到 muse2api 已经在后台运行中 (PID: $RUN_PID)。${NC}"
     else
-        echo -e "${YELLOW}[*] 正在通过 nohup 启动后台服务 (监听 127.0.0.1:$PORT)...${NC}"
-        nohup venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port $PORT > muse.log 2>&1 &
+        echo -e "${YELLOW}[*] 正在通过 nohup 启动后台服务 (监听 $HOST:$PORT)...${NC}"
+        nohup venv/bin/python -m uvicorn app:app --host $HOST --port $PORT > muse.log 2>&1 &
         sleep 2
         
-        if pgrep -f "python -m uvicorn app:app" > /dev/null; then
+        if [ -n "$(muse_pids)" ]; then
             echo -e "${GREEN}[✔] 服务已成功在后台启动！日志已写入 muse.log${NC}"
         else
             echo -e "${RED}[✘] 启动失败！请检查 muse.log 日志内容：${NC}"
@@ -164,7 +203,7 @@ do_start() {
 
 # 停止服务
 do_stop() {
-    OLD_PID=$(pgrep -f "python -m uvicorn app:app")
+    OLD_PID=$(muse_pids)
     if [ -n "$OLD_PID" ]; then
         kill -9 $OLD_PID
         echo -e "${GREEN}[✔] 服务已安全停止 (PID: $OLD_PID)。${NC}"
@@ -196,11 +235,20 @@ do_setup() {
     fi
     cd "$INSTALL_DIR" || exit 1
     LOGIN=$(whoami)
+    detect_provider
 
     echo -e "${BLUE}=== 一键配置向导 ===${NC}"
+    SVC_HOST=127.0.0.1
+    CHROMIUM_BIN=/usr/bin/chromium
+    if has_devil; then
+        echo -e "${GREEN}已识别服务器：$PROVIDER（面板 $PANEL）${NC}"
+    else
+        echo -e "${GREEN}已识别系统：$OS_TYPE（VPS 模式，无 devil 面板）${NC}"
+    fi
 
+    if has_devil; then
     # ---- 1. 端口：优先复用已预留的 TCP 端口，没有则自动申请 ----
-    echo -e "${YELLOW}[1/5] 检测 Serv00 预留 TCP 端口...${NC}"
+    echo -e "${YELLOW}[1/5] 检测 $PROVIDER 预留 TCP 端口...${NC}"
     TCP_PORT=$(devil port list 2>/dev/null | grep -i "tcp" | head -1 | grep -o '[0-9]\+' | head -1)
     if [ -z "$TCP_PORT" ]; then
         echo -e "${YELLOW}未发现预留端口，正在自动申请...${NC}"
@@ -220,7 +268,7 @@ do_setup() {
 
     # ---- 2. 反向代理域名 ----
     echo -e "${YELLOW}[2/5] 配置反向代理域名...${NC}"
-    DOMAIN="muse.$LOGIN.serv00.net"
+    DOMAIN="muse.$LOGIN.$SUFFIX"
     printf "域名（回车使用默认 %s）: " "$DOMAIN"
     read IN_DOMAIN
     [ -n "$IN_DOMAIN" ] && DOMAIN="$IN_DOMAIN"
@@ -241,9 +289,25 @@ do_setup() {
             echo -e "${YELLOW}请稍后在 Serv00 面板手动添加 Proxy 类型网站：域名 $DOMAIN，目标 127.0.0.1:$TCP_PORT${NC}"
         fi
     fi
+    else
+        # ---- Linux VPS：无 devil，手动指定端口 / 监听地址 / 公网访问地址 ----
+        echo -e "${YELLOW}[1/3] 服务端口...${NC}"
+        printf "监听端口（回车使用 8000）: "
+        read TCP_PORT
+        [ -z "$TCP_PORT" ] && TCP_PORT=8000
+        echo -e "${YELLOW}[2/3] 监听地址...${NC}"
+        printf "监听地址（回车 127.0.0.1；如需公网直接访问填 0.0.0.0）: "
+        read SVC_HOST
+        [ -z "$SVC_HOST" ] && SVC_HOST=127.0.0.1
+        echo -e "${YELLOW}[3/3] 公网访问地址（可选）...${NC}"
+        printf "如 https://api.example.com，没有请回车跳过: "
+        read PUBLIC_BASE
+        CHROMIUM_BIN="$(command -v chromium || command -v chromium-browser || command -v google-chrome || echo /usr/bin/chromium)"
+        echo -e "${GREEN}使用 $SVC_HOST:$TCP_PORT，Chromium: $CHROMIUM_BIN${NC}"
+    fi
 
-    # ---- 3. API 密钥 ----
-    echo -e "${YELLOW}[3/5] API 密钥 (MUSE2API_KEY)...${NC}"
+    # ---- API 密钥 ----
+    echo -e "${YELLOW}[*] API 密钥 (MUSE2API_KEY)...${NC}"
     echo "  g      = 现在就自动生成一个高强度密钥（推荐）"
     echo "  回车    = 留空，首次启动时由程序自动生成并打印到日志"
     echo "  或直接输入你的密钥（需以 m2a_ 开头）"
@@ -262,17 +326,19 @@ do_setup() {
             ;;
     esac
 
-    # ---- 4. 写入 .env ----
-    echo -e "${YELLOW}[4/5] 写入 .env 配置文件...${NC}"
+    # ---- 写入 .env ----
+    echo -e "${YELLOW}[*] 写入 .env 配置文件...${NC}"
     [ -f .env ] && cp .env ".env.bak.$(date +%Y%m%d%H%M%S)"
-    PUBLIC_BASE=""
-    [ "$DOMAIN_OK" = "1" ] && PUBLIC_BASE="https://$DOMAIN"
+    if has_devil; then
+        PUBLIC_BASE=""
+        [ "$DOMAIN_OK" = "1" ] && PUBLIC_BASE="https://$DOMAIN"
+    fi
     cat > .env <<CFGEOF
 MUSE2API_KEY=$API_KEY
-MUSE2API_HOST=127.0.0.1
+MUSE2API_HOST=$SVC_HOST
 MUSE2API_PORT=$TCP_PORT
 MUSE2API_PUBLIC_BASE=$PUBLIC_BASE
-MUSE2API_CHROMIUM=/usr/bin/chromium
+MUSE2API_CHROMIUM=$CHROMIUM_BIN
 MUSE2API_CDP_PORT=19210
 MUSE2API_IMAGE_TIMEOUT=240
 MUSE2API_VIDEO_TIMEOUT=600
@@ -284,31 +350,46 @@ MUSE2API_REF_IMAGE_PRIVATE_FETCH=0
 CFGEOF
     echo -e "${GREEN}[+] .env 已生成（旧文件已备份为 .env.bak.*）。${NC}"
 
-    # ---- 5. binexec（Chromium 这类自带二进制需要） ----
-    echo -e "${YELLOW}[5/5] 开启二进制执行权限...${NC}"
+    # 记录本次向导创建/使用的资源，供选项7彻底卸载时清理
+    {
+        [ "$DOMAIN_OK" = "1" ] && echo "DOMAIN=$DOMAIN"
+        echo "PORT=$TCP_PORT"
+    } > "$HOME/.muse2api_meta"
+
+    # ---- binexec（devil 主机：Chromium 这类自带二进制需要） ----
+    if has_devil; then
+    echo -e "${YELLOW}[*] 开启二进制执行权限...${NC}"
     devil binexec on >/dev/null 2>&1 \
         && echo -e "${GREEN}[+] binexec 已开启。${NC}" \
         || echo -e "${YELLOW}[!] binexec 开启失败，可稍后在面板手动开启。${NC}"
+    fi
 
     echo
     echo -e "${GREEN}=== 配置完成 ===${NC}"
-    [ "$DOMAIN_OK" = "1" ] && echo -e "  访问地址: https://$DOMAIN"
-    echo -e "  监听端口: 127.0.0.1:$TCP_PORT"
+    if has_devil && [ "$DOMAIN_OK" = "1" ]; then
+        ACCESS_URL="https://$DOMAIN"
+    elif [ -n "$PUBLIC_BASE" ]; then
+        ACCESS_URL="$PUBLIC_BASE"
+    else
+        ACCESS_URL="http://$SVC_HOST:$TCP_PORT"
+    fi
+    echo -e "  访问地址: $ACCESS_URL"
+    echo -e "  监听地址: $SVC_HOST:$TCP_PORT"
     if [ "$KEY_GEN" = "1" ]; then
         echo -e "  API 密钥: $API_KEY（已写入 .env，请妥善保存，调用 API 时需要它）"
     elif [ -z "$API_KEY" ]; then
-        echo -e "  API 密钥: 首次启动后自动生成，请用选项 4 查看日志获取"
+        echo -e "  API 密钥: 首次启动后自动生成，请用选项 5 查看日志获取"
     fi
-    if pgrep -f "python -m uvicorn app:app" >/dev/null 2>&1; then
-        echo -e "  ${YELLOW}服务正在运行，新配置需重启生效（选 3 停止，再选 2 启动）。${NC}"
+    if [ -n "$(muse_pids)" ]; then
+        echo -e "  ${YELLOW}服务正在运行，新配置需重启生效（选 4 停止，再选 3 启动）。${NC}"
     else
-        echo -e "  下一步: 选择 2 启动服务"
+        echo -e "  ${RED}下一步: 先选择 3 启动服务，启动成功后再用浏览器打开 $ACCESS_URL${NC}"
     fi
     echo
     printf "需要手动微调 .env 吗？[y/N]: "
     read TWEAK
     case "$TWEAK" in
-        [yY]*) nano .env ;;
+        [yY]*) nano .env 2>/dev/null || vi .env ;;
     esac
     read -p "按回车键返回主菜单..." dummy
 }
@@ -344,21 +425,62 @@ do_update() {
     read -p "按回车键返回主菜单..." dummy
 }
 
-# 卸载清理
+# 卸载清理（含向导创建的域名与端口）
 do_uninstall() {
+    echo -e "${YELLOW}[!] 将删除：程序目录、浏览器配置(muse2api-profiles，含账号登录态)、相关脚本。${NC}"
     printf "确认要彻底卸载清理吗？[y/N]: "
     read confirm
     case "$confirm" in
-        [yY])
-            OLD_PID=$(pgrep -f "python -m uvicorn app:app")
-            [ -n "$OLD_PID" ] && kill -9 $OLD_PID
-            [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
-            [ -f "$BIN_PATH" ] && rm -f "$BIN_PATH"
-            echo -e "${GREEN}[✔] 已完全清理！${NC}"
-            exit 0
-            ;;
+        [yY]) ;;
+        *) read -p "按回车键返回主菜单..." dummy; return ;;
     esac
-    read -p "按回车键返回主菜单..." dummy
+
+    # devil 主机：清理向导创建的代理域名与预留端口（记录在 ~/.muse2api_meta；无记录时回退探测）
+    if has_devil; then
+    detect_provider
+    DEL_DOMAIN=""; DEL_PORT=""
+    if [ -f "$HOME/.muse2api_meta" ]; then
+        . "$HOME/.muse2api_meta"
+        DEL_DOMAIN="$DOMAIN"; DEL_PORT="$PORT"
+    else
+        DEF_DOMAIN="muse.$(whoami).$SUFFIX"
+        devil www list 2>/dev/null | grep -q "$DEF_DOMAIN" && DEL_DOMAIN="$DEF_DOMAIN"
+        [ -f "$INSTALL_DIR/.env" ] && DEL_PORT=$(grep -E '^MUSE2API_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d ' \r')
+    fi
+    if [ -n "$DEL_DOMAIN" ] || [ -n "$DEL_PORT" ]; then
+        echo -e "${YELLOW}检测到向导创建的资源：${NC}"
+        [ -n "$DEL_DOMAIN" ] && echo -e "  代理域名: $DEL_DOMAIN"
+        [ -n "$DEL_PORT" ] && echo -e "  预留端口: $DEL_PORT (TCP)"
+        printf "是否一并删除？[y/N]: "
+        read del_confirm
+        case "$del_confirm" in
+            [yY])
+                if [ -n "$DEL_DOMAIN" ]; then
+                    devil www del "$DEL_DOMAIN" >/dev/null 2>&1 \
+                        && echo -e "${GREEN}已删除代理域名 $DEL_DOMAIN${NC}" \
+                        || echo -e "${YELLOW}域名删除失败或不存在。${NC}"
+                fi
+                if [ -n "$DEL_PORT" ]; then
+                    devil port del tcp "$DEL_PORT" >/dev/null 2>&1 \
+                        && echo -e "${GREEN}已释放 TCP 端口 $DEL_PORT${NC}" \
+                        || echo -e "${YELLOW}端口释放失败或不存在。${NC}"
+                fi
+                ;;
+        esac
+        rm -f "$HOME/.muse2api_meta"
+    fi
+    fi
+    rm -f "$HOME/.muse2api_meta"
+
+    PIDS=$(muse_pids)
+    [ -n "$PIDS" ] && kill -9 $PIDS
+    [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+    [ -f "$BIN_PATH" ] && rm -f "$BIN_PATH"
+    [ -f "$HOME/m.sh" ] && rm -f "$HOME/m.sh"
+    [ -f "$HOME/setup-muse.sh" ] && rm -f "$HOME/setup-muse.sh"
+    [ -d "$HOME/muse2api-profiles" ] && rm -rf "$HOME/muse2api-profiles"
+    echo -e "${GREEN}[✔] 已完全清理！${NC}"
+    exit 0
 }
 
 setup_shortcut >/dev/null 2>&1
@@ -367,13 +489,13 @@ export PATH="$HOME/bin:$PATH"
 while true; do
     clear
     echo "=========================================================="
-    echo "       Muse2API Serv00 全自动一键管理控制面板 By:Djkyc      "
+    echo "       Muse2API 全自动一键管理控制面板                     "
     echo "=========================================================="
     echo " 1. 全自动拉取源码、创建环境与安装依赖 (Install)"
-    echo " 2. 后台启动服务 (Start)"
-    echo " 3. 停止后台服务 (Stop)"
-    echo " 4. 查看最新运行日志 (Logs)"
-    echo " 5. 一键配置：Serv00 端口/代理域名/密钥 (.env 向导)"
+    echo " 2. 一键配置：端口/代理域名/密钥 (.env 向导)"
+    echo " 3. 后台启动服务 (Start)"
+    echo " 4. 停止后台服务 (Stop)"
+    echo " 5. 查看最新运行日志 (Logs)"
     echo " 6. 检查并拉取最新源码 (Git Pull)"
     echo " 7. 一键完全卸载与清理 (Uninstall)"
     echo " 0. 退出脚本 (Exit)"
@@ -382,10 +504,10 @@ while true; do
     read choice
     case "$choice" in
         1) do_install ;;
-        2) do_start ;;
-        3) do_stop ;;
-        4) do_logs ;;
-        5) do_setup ;;
+        2) do_setup ;;
+        3) do_start ;;
+        4) do_stop ;;
+        5) do_logs ;;
         6) do_update ;;
         7) do_uninstall ;;
         0) echo "再见！"; exit 0 ;;
