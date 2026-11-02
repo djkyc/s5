@@ -490,7 +490,7 @@ uninstall_service() {
     echo "———————————————————————"
 
     # 只删本脚本自己创建的资源：python 域名 $DOMAIN、备注为 s5 的端口、
-    # $PY_DIR 下的进程、~/bin/s5 快捷链接。
+    # $PY_DIR 下的进程、~/bin/s5 快捷链接、~/s5.sh 脚本本体。
     # 域名目录动手前必须验明正身（有 get.py/s5.enc/.env 任一特征文件），
     # 防止目录被挪作他用后仍被 rm -rf。
 
@@ -511,7 +511,7 @@ uninstall_service() {
     [[ $DEL_DOMAIN -eq 1 && $IS_OURS -eq 1 && -d "$PY_DIR" ]] && echo "  目录: $PY_DIR"
     [[ -n "$S5_PORT" ]] && echo "  端口: $S5_PORT (tcp)"
     [[ -e "$HOME/bin/s5" ]] && echo "  快捷方式: $HOME/bin/s5"
-    echo "  （$HOME/s5.sh 本体保留，以后想重装可 bash ~/s5.sh）"
+    [[ -f "$HOME/s5.sh" ]] && echo "  脚本本体: $HOME/s5.sh"
 
     if [[ $DEL_DOMAIN -eq 0 && -z "$S5_PORT" && ! -e "$HOME/bin/s5" ]]; then
         echo "ℹ️ 没有检测到本脚本创建的资源，无需卸载"
@@ -556,11 +556,15 @@ uninstall_service() {
         echo "ℹ️ 未检测到本脚本的运行进程"
     fi
 
-    # 一键卸载后快捷方式也跟着没有：只删链接，不删 $HOME/s5.sh 本体，
-    # 这样以后想重装还能 bash ~/s5.sh，而直接输 s5 会提示 command not found
+    # 快捷方式和脚本本体一起删，卸载后不留任何 s5 相关文件。
+    # 注意：bash 执行中的脚本删文件不影响当前这次运行（读的是已打开的文件描述符）。
     if [[ -e "$HOME/bin/s5" ]]; then
         rm -f "$HOME/bin/s5"
-        echo "✅ 已删除 s5 快捷方式（$HOME/bin/s5），$HOME/s5.sh 本体保留"
+        echo "✅ 已删除 s5 快捷方式（$HOME/bin/s5）"
+    fi
+    if [[ -f "$HOME/s5.sh" ]]; then
+        rm -f "$HOME/s5.sh"
+        echo "✅ 已删除脚本本体（$HOME/s5.sh）"
     fi
 
     echo "✅ 卸载完成"
