@@ -61,7 +61,7 @@ SCRIPT_URL="https://raw.githubusercontent.com/djkyc/s5/refs/heads/main/os.sh"
 # ---------------- 菜单 ----------------
 menu() {
     echo "———————————————————————"
-    echo "此脚本由by:𝑺𝒆𝒓𝒐𝒌𝑽𝒊𝒑 二次改编Djkyc"
+    echo "此脚本由by:SerokVip 二次改编Djkyc"
     echo "请选择操作："
     echo "1) 一键安装"
     echo "2) 端口管理"
