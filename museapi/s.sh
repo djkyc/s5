@@ -257,7 +257,14 @@ do_setup() {
         if devil ssl www list 2>/dev/null | grep -q "$DOMAIN"; then
             echo -e "${GREEN}域名 $DOMAIN 已有专属 SSL 证书，跳过签发。${NC}"
         else
-            CERT_IP=$(python3 -c "import socket;print(socket.gethostbyname('$DOMAIN'))" 2>/dev/null)
+            # 刚创建的域名 DNS 可能还没生效，等待重试最多约 1 分钟
+            CERT_IP=""
+            for _try in $(seq 1 6); do
+                CERT_IP=$(python3 -c "import socket;print(socket.gethostbyname('$DOMAIN'))" 2>/dev/null)
+                [ -n "$CERT_IP" ] && break
+                echo -e "${YELLOW}等待域名 DNS 生效，重试 $_try/6...${NC}"
+                sleep 10
+            done
             if [ -z "$CERT_IP" ]; then
                 echo -e "${YELLOW}[!] 域名 $DOMAIN 解析失败，跳过自动签发（可稍后在面板 SSL → WWW websites 中手动签发）。${NC}"
             else
