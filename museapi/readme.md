@@ -3,7 +3,8 @@
 > - 【内部使用，请勿外传】- CT8/Serv00/Ubuntu/Debian 一键— museapi
 >
 ```shell
-bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/museapi/os.sh)
+cd ~ && bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/museapi/m.sh)
+
 ```
 
 
