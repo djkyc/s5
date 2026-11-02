@@ -20,3 +20,4 @@ cd ~ && bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/
 >
 ```shell
 cd ~ && curl -fsSL "cd ~ && bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/museapi/os.sh)" -o ~/setup-muse.sh && bash ~/setup-muse.sh
+```
