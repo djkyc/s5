@@ -79,15 +79,16 @@ install_service() {
     echo "开始一键安装流程..."
     echo "————————————————————————————————————————————"
 
-    # 删除已有 PHP 域名
-    PHP_DOMAIN=$(devil www list | awk 'NR>1 && $2=="php"{print $1}')
+    # 删除默认 PHP 域名：只转自己账号的默认域名，不碰其它 php 站点
+    # （旧版取"第一个 php 域名"就删，多域名用户会被误删）
+    PHP_DOMAIN=$(devil www list 2>/dev/null | awk -v d="$DOMAIN" 'NR>1 && $1==d && $2=="php"{print $1}')
     if [[ -n "$PHP_DOMAIN" ]]; then
         X "删除 默认PHP域名 ($PHP_DOMAIN)" "devil www del \"$PHP_DOMAIN\" || true"
         if [[ -d "$HOME/domains/$PHP_DOMAIN" ]]; then
             X "删除 PHP 域名目录 ($HOME/domains/$PHP_DOMAIN)" "rm -rf \"$HOME/domains/$PHP_DOMAIN\""
         fi
     else
-        echo "ℹ️ 域名列表为空，无需删除 PHP 域名"
+        echo "ℹ️ 默认域名 $DOMAIN 不是 PHP 类型，跳过删除"
     fi
 
     # 检查 Python 域名是否已存在
@@ -486,33 +487,80 @@ show_service() {
 # ---------------- 一键卸载 ----------------
 uninstall_service() {
     echo "开始卸载服务..."
+    echo "———————————————————————"
 
-    # 删除 Python 域名
-    if devil www list | awk -v domain="$DOMAIN" 'NR>1 && $1==domain && $2=="python"{exit 0}'; then
-        X "删除 Python 域名 ($DOMAIN)" "devil www del \"$DOMAIN\" || true"
-        # 删除域名目录
-        if [[ -d "$HOME/domains/$DOMAIN" ]]; then
-            X "删除 Python 域名目录 ($HOME/domains/$DOMAIN)" "rm -rf \"$HOME/domains/$DOMAIN\""
-        fi
+    # 只删本脚本自己创建的资源：python 域名 $DOMAIN、备注为 s5 的端口、
+    # $PY_DIR 下的进程、~/bin/s5 快捷链接。
+    # 域名目录动手前必须验明正身（有 get.py/s5.enc/.env 任一特征文件），
+    # 防止目录被挪作他用后仍被 rm -rf。
+
+    DEL_DOMAIN=0
+    if devil www list 2>/dev/null | awk -v d="$DOMAIN" 'NR>1 && $1==d && $2=="python"{found=1} END{exit !found}'; then
+        DEL_DOMAIN=1
     fi
 
-    # 删除 s5 端口
-    S5_PORT=$(devil port list | awk 'NR>1 && $3=="s5"{print $1}')
+    IS_OURS=0
+    if [[ -f "$PY_DIR/get.py" || -f "$PY_DIR/s5.enc" || -f "$ENV_FILE" ]]; then
+        IS_OURS=1
+    fi
+
+    S5_PORT=$(devil port list 2>/dev/null | awk 'NR>1 && $3=="s5"{print $1}')
+
+    echo "将要删除（仅限本脚本创建的资源）："
+    [[ $DEL_DOMAIN -eq 1 ]] && echo "  域名: $DOMAIN (python)"
+    [[ $DEL_DOMAIN -eq 1 && $IS_OURS -eq 1 && -d "$PY_DIR" ]] && echo "  目录: $PY_DIR"
+    [[ -n "$S5_PORT" ]] && echo "  端口: $S5_PORT (tcp)"
+    [[ -e "$HOME/bin/s5" ]] && echo "  快捷方式: $HOME/bin/s5"
+    echo "  （$HOME/s5.sh 本体保留，以后想重装可 bash ~/s5.sh）"
+
+    if [[ $DEL_DOMAIN -eq 0 && -z "$S5_PORT" && ! -e "$HOME/bin/s5" ]]; then
+        echo "ℹ️ 没有检测到本脚本创建的资源，无需卸载"
+        read -p "按回车返回主菜单..."
+        return
+    fi
+
+    read -p "确认卸载？(y/n): " cf
+    if [[ "$cf" != "y" && "$cf" != "Y" ]]; then
+        echo "已取消"
+        read -p "按回车返回主菜单..."
+        return
+    fi
+
+    if [[ $DEL_DOMAIN -eq 1 ]]; then
+        X "删除 Python 域名 ($DOMAIN)" "devil www del \"$DOMAIN\" || true"
+        if [[ $IS_OURS -eq 1 && -d "$PY_DIR" ]]; then
+            X "删除域名目录 ($PY_DIR)" "rm -rf \"$PY_DIR\""
+        elif [[ -d "$PY_DIR" ]]; then
+            echo "⚠️ $PY_DIR 下没有 s5 的特征文件（get.py/s5.enc/.env），疑似被挪作他用，已跳过删除"
+        fi
+    else
+        echo "ℹ️ 域名 $DOMAIN 不存在或不是 python 类型，跳过域名与目录删除"
+    fi
+
     if [[ -n "$S5_PORT" ]]; then
         X "删除 s5 端口 ($S5_PORT)" "devil port del tcp $S5_PORT"
     fi
 
-    PID=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}')
+    # 只杀本脚本的进程：确认是自家安装才按伪装名杀，避免误伤同名进程
+    PID=""
+    if [[ $IS_OURS -eq 1 ]]; then
+        PID=$(ps -A -o pid,comm,args | grep "[p]ython3:.*systemd-journald" | awk '{print $1}')
+    fi
+    if [[ -z "$PID" && -f "$PY_DIR/get.py" ]]; then
+        PID=$(pgrep -f "python3 $PY_DIR/get.py" 2>/dev/null || true)
+    fi
     if [[ -n "$PID" ]]; then
-        kill -9 $PID
+        kill -9 $PID 2>/dev/null || true
         echo "✅ 已杀掉 PID $PID"
+    else
+        echo "ℹ️ 未检测到本脚本的运行进程"
     fi
 
     # 一键卸载后快捷方式也跟着没有：只删链接，不删 $HOME/s5.sh 本体，
     # 这样以后想重装还能 bash ~/s5.sh，而直接输 s5 会提示 command not found
     if [[ -e "$HOME/bin/s5" ]]; then
         rm -f "$HOME/bin/s5"
-        echo "✅ 已删除 s5 快捷方式（$HOME/bin/s5）"
+        echo "✅ 已删除 s5 快捷方式（$HOME/bin/s5），$HOME/s5.sh 本体保留"
     fi
 
     echo "✅ 卸载完成"
