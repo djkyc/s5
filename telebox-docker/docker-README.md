@@ -1,3 +1,8 @@
+
+``` shell
+bash <(curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/telebox-docker/os.sh)
+```
+
 # 📦 TeleBox Docker 镜像（自动同步官方版本）
 
 本镜像自动同步 **TeleBox 官方代码** 并构建多架构 Docker 镜像（amd64 / arm64）。
@@ -191,6 +196,8 @@ services:
       TELEBOX_BOT_TOKEN: "123:ABC"
     restart: unless-stopped
 ```
+
+
 
 ---
 
