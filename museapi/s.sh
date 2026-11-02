@@ -2,7 +2,7 @@ cat << 'EOF' > m.sh
 #!/bin/sh
 
 # ====================================================================
-#  Muse2API Serv00 (FreeBSD) 全自动一键部署与管理脚本
+#  Muse2API Serv00 (FreeBSD) 全自动一键部署与管理脚本By:Djkyc 
 # ====================================================================
 
 RED='\033[0;31m'
@@ -52,6 +52,13 @@ PYEOF
     fi
 }
 
+# 查找正在运行的 muse2api 进程 PID（排除僵尸进程，避免把已死的进程误判为运行中）
+muse_pids() {
+    for p in $(pgrep -f "uvicorn app:app" 2>/dev/null); do
+        ps -o pid,stat -p "$p" 2>/dev/null | awk 'NR==2 && $2 !~ /^Z/ {print $1}'
+    done
+}
+
 # 全自动安装/重装
 do_install() {
     echo -e "${BLUE}=== 开始全自动拉取与配置 muse2api ===${NC}"
@@ -59,8 +66,8 @@ do_install() {
     # 如果目录存在但坏了，自动清理重建
     if [ -d "$INSTALL_DIR" ]; then
         echo -e "${YELLOW}[*] 检测到旧目录，正在清理旧版本...${NC}"
-        OLD_PID=$(pgrep -f "python -m uvicorn app:app")
-        [ -n "$OLD_PID" ] && kill -9 $OLD_PID
+        PIDS=$(muse_pids)
+        [ -n "$PIDS" ] && kill -9 $PIDS
         rm -rf "$INSTALL_DIR"
     fi
 
@@ -140,18 +147,19 @@ do_start() {
 
     cd "$INSTALL_DIR" || exit 1
 
-    # 端口优先使用 .env 中的 MUSE2API_PORT（选项5向导写入），回退到脚本默认值
+    # 端口优先使用 .env 中的 MUSE2API_PORT（选项2向导写入），回退到脚本默认值
     ENV_PORT=$(grep -E '^MUSE2API_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d ' \r')
     [ -n "$ENV_PORT" ] && PORT="$ENV_PORT"
 
-    if pgrep -f "python -m uvicorn app:app" > /dev/null; then
-        echo -e "${YELLOW}[!] 检测到 muse2api 已经在后台运行中。${NC}"
+    RUN_PID=$(muse_pids)
+    if [ -n "$RUN_PID" ]; then
+        echo -e "${YELLOW}[!] 检测到 muse2api 已经在后台运行中 (PID: $RUN_PID)。${NC}"
     else
         echo -e "${YELLOW}[*] 正在通过 nohup 启动后台服务 (监听 127.0.0.1:$PORT)...${NC}"
         nohup venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port $PORT > muse.log 2>&1 &
         sleep 2
         
-        if pgrep -f "python -m uvicorn app:app" > /dev/null; then
+        if [ -n "$(muse_pids)" ]; then
             echo -e "${GREEN}[✔] 服务已成功在后台启动！日志已写入 muse.log${NC}"
         else
             echo -e "${RED}[✘] 启动失败！请检查 muse.log 日志内容：${NC}"
@@ -164,7 +172,7 @@ do_start() {
 
 # 停止服务
 do_stop() {
-    OLD_PID=$(pgrep -f "python -m uvicorn app:app")
+    OLD_PID=$(muse_pids)
     if [ -n "$OLD_PID" ]; then
         kill -9 $OLD_PID
         echo -e "${GREEN}[✔] 服务已安全停止 (PID: $OLD_PID)。${NC}"
@@ -303,12 +311,16 @@ CFGEOF
     if [ "$KEY_GEN" = "1" ]; then
         echo -e "  API 密钥: $API_KEY（已写入 .env，请妥善保存，调用 API 时需要它）"
     elif [ -z "$API_KEY" ]; then
-        echo -e "  API 密钥: 首次启动后自动生成，请用选项 4 查看日志获取"
+        echo -e "  API 密钥: 首次启动后自动生成，请用选项 5 查看日志获取"
     fi
-    if pgrep -f "python -m uvicorn app:app" >/dev/null 2>&1; then
-        echo -e "  ${YELLOW}服务正在运行，新配置需重启生效（选 3 停止，再选 2 启动）。${NC}"
+    if [ -n "$(muse_pids)" ]; then
+        echo -e "  ${YELLOW}服务正在运行，新配置需重启生效（选 4 停止，再选 3 启动）。${NC}"
     else
-        echo -e "  下一步: 选择 2 启动服务"
+        if [ "$DOMAIN_OK" = "1" ]; then
+            echo -e "  ${RED}下一步: 先选择 3 启动服务，启动成功后再用浏览器打开 https://$DOMAIN${NC}"
+        else
+            echo -e "  ${RED}下一步: 先选择 3 启动服务${NC}"
+        fi
     fi
     echo
     printf "需要手动微调 .env 吗？[y/N]: "
@@ -352,6 +364,7 @@ do_update() {
 
 # 卸载清理（含向导创建的域名与端口）
 do_uninstall() {
+    echo -e "${YELLOW}[!] 将删除：程序目录、浏览器配置(muse2api-profiles，含账号登录态)、相关脚本。${NC}"
     printf "确认要彻底卸载清理吗？[y/N]: "
     read confirm
     case "$confirm" in
@@ -392,11 +405,13 @@ do_uninstall() {
         rm -f "$HOME/.muse2api_meta"
     fi
 
-    OLD_PID=$(pgrep -f "python -m uvicorn app:app")
-    [ -n "$OLD_PID" ] && kill -9 $OLD_PID
+    PIDS=$(muse_pids)
+    [ -n "$PIDS" ] && kill -9 $PIDS
     [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
     [ -f "$BIN_PATH" ] && rm -f "$BIN_PATH"
     [ -f "$HOME/m.sh" ] && rm -f "$HOME/m.sh"
+    [ -f "$HOME/setup-muse.sh" ] && rm -f "$HOME/setup-muse.sh"
+    [ -d "$HOME/muse2api-profiles" ] && rm -rf "$HOME/muse2api-profiles"
     echo -e "${GREEN}[✔] 已完全清理！${NC}"
     exit 0
 }
@@ -407,13 +422,13 @@ export PATH="$HOME/bin:$PATH"
 while true; do
     clear
     echo "=========================================================="
-    echo "       Muse2API Serv00 全自动一键管理控制面板             "
+    echo "       Muse2API Serv00 全自动一键管理控制面板 By:Djkyc      "
     echo "=========================================================="
     echo " 1. 全自动拉取源码、创建环境与安装依赖 (Install)"
-    echo " 2. 后台启动服务 (Start)"
-    echo " 3. 停止后台服务 (Stop)"
-    echo " 4. 查看最新运行日志 (Logs)"
-    echo " 5. 一键配置：Serv00 端口/代理域名/密钥 (.env 向导)"
+    echo " 2. 一键配置：Serv00 端口/代理域名/密钥 (.env 向导)"
+    echo " 3. 后台启动服务 (Start)"
+    echo " 4. 停止后台服务 (Stop)"
+    echo " 5. 查看最新运行日志 (Logs)"
     echo " 6. 检查并拉取最新源码 (Git Pull)"
     echo " 7. 一键完全卸载与清理 (Uninstall)"
     echo " 0. 退出脚本 (Exit)"
@@ -422,10 +437,10 @@ while true; do
     read choice
     case "$choice" in
         1) do_install ;;
-        2) do_start ;;
-        3) do_stop ;;
-        4) do_logs ;;
-        5) do_setup ;;
+        2) do_setup ;;
+        3) do_start ;;
+        4) do_stop ;;
+        5) do_logs ;;
         6) do_update ;;
         7) do_uninstall ;;
         0) echo "再见！"; exit 0 ;;
