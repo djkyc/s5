@@ -1,7 +1,8 @@
 #!/bin/sh
 
 # ====================================================================
-#  Muse2API 多系统通用一键管理与部署脚本 (Serv00/Ubuntu/Debian)By:djkyc
+#  Muse2API 多系统通用一键管理与部署脚本 (Serv00/Ubuntu/Debian)
+#  Author: djkyc
 # ====================================================================
 
 # 颜色定义
@@ -44,7 +45,6 @@ setup_shortcut() {
 
 # 2. 环境智能初始化检查
 check_env() {
-    # 检测是否为 Ubuntu / Debian 且拥有 sudo 权限（可选增强）
     if command -v apt-get >/dev/null 2>&1 && [ "$(id -u)" -ne 0 ]; then
         echo -e "${YELLOW}[*] 检测到 Linux (Ubuntu/Debian) 非 root 环境，将采用用户态部署...${NC}"
     fi
@@ -212,9 +212,11 @@ setup_shortcut >/dev/null 2>&1
 # 主菜单循环
 while true; do
     clear
-    echo "========================================================="
-    echo " Muse2API 通用一键管理与部署菜单 快捷方式--"muse" By:djkyc  "
-    echo "========================================================="
+    echo "=========================================================="
+    echo "                  Muse2API 管理控制面板                   "
+    echo "         多系统通用一键部署 (Serv00/Ubuntu/Debian)        "
+    echo "         快捷指令：muse  | Author: SerokVip指导djkyc二编  "
+    echo "=========================================================="
     echo " 1. 智能化一键安装 / 配置依赖 (Install)"
     echo " 2. 启动后台服务 (Start)"
     echo " 3. 停止后台服务 (Stop)"
@@ -223,7 +225,7 @@ while true; do
     echo " 6. 检查并拉取最新源码 (Git Pull)"
     echo " 7. 一键完全卸载与清理 (Uninstall)"
     echo " 0. 退出脚本 (Exit)"
-    echo "=========================================="
+    echo "=========================================================="
     printf "请输入选项 [0-7]: "
     read choice
 
