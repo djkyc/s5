@@ -1,7 +1,7 @@
 cat << 'EOF' > install.sh
 #!/bin/bash
 
-# Kolory
+# 颜色
 GREEN="\033[32m"
 YELLOW="\033[33m"
 CYAN="\033[36m"
@@ -12,7 +12,7 @@ USERNAME=$(whoami)
 HOSTNAME=$(hostname)
 APP_DIR="$HOME/muse2api"
 
-# Automatyczne rozpoznawanie platformy (Serv00 lub ct8)
+# 自动识别平台 (Serv00 或 ct8)
 if [[ "$HOSTNAME" == *"ct8"* ]] || [ -d "/home/ct8" ] || command -v ct8 &>/dev/null; then
     PLATFORM="ct8"
     DOMAIN="muse.${USERNAME}.ct8.pl"
@@ -128,7 +128,7 @@ do_uninstall() {
     read -p "按回车键返回主菜单..."
 }
 
-# Główna pętla menu
+# 主循环菜单
 while true; do
     show_banner
     read -p "请选择操作编号 [0-5]: " choice
@@ -144,5 +144,6 @@ while true; do
 done
 EOF
 
+# 赋予执行权限并直接运行
 chmod +x install.sh
 ./install.sh
