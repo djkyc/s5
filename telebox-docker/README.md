@@ -1,5 +1,6 @@
-```bash
-bash <(curl -Ls https://raw.githubusercontent.com/djkyc/telebox-docker/refs/heads/main/os.sh)
+```shell
+bash
+ <(curl -Ls https://raw.githubusercontent.com/djkyc/telebox-docker/refs/heads/main/os.sh)
 ```
 
 🌟 脚本特性：
