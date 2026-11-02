@@ -2,7 +2,7 @@ cat << 'EOF' > m.sh
 #!/bin/sh
 
 # ====================================================================
-#  Muse2API Serv00 (FreeBSD) 专用一键管理脚本
+#  Muse2API Serv00 (FreeBSD) 全自动一键部署与管理脚本
 # ====================================================================
 
 RED='\033[0;31m'
@@ -13,8 +13,9 @@ NC='\033[0m'
 
 INSTALL_DIR="$HOME/muse2api"
 BIN_PATH="$HOME/bin/muse"
-PORT=28610  # 修改为你Serv00分配的安全端口
+PORT=28610  # 修改为你 Serv00 分配的端口
 
+# 注册全局快捷指令
 setup_shortcut() {
     [ ! -d "$HOME/bin" ] && mkdir -p "$HOME/bin"
     CURRENT_SCRIPT="$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null)"
@@ -32,32 +33,71 @@ setup_shortcut() {
     fi
 }
 
+# 全自动安装/重装
 do_install() {
-    echo -e "${BLUE}=== 开始安装 / 配置 muse2api ===${NC}"
-    [ ! -d "$INSTALL_DIR" ] && git clone https://github.com/czg86389-hub/muse2api.git "$INSTALL_DIR"
+    echo -e "${BLUE}=== 开始全自动拉取与配置 muse2api ===${NC}"
+    
+    # 如果目录存在但坏了，自动清理重建
+    if [ -d "$INSTALL_DIR" ]; then
+        echo -e "${YELLOW}[*] 检测到旧目录，正在清理旧版本...${NC}"
+        OLD_PID=$(pgrep -f "python -m uvicorn app:app")
+        [ -n "$OLD_PID" ] && kill -9 $OLD_PID
+        rm -rf "$INSTALL_DIR"
+    fi
+
+    echo -e "${YELLOW}[*] 正在从 GitHub 官方仓库克隆源码...${NC}"
+    git clone https://github.com/czg86389-hub/muse2api.git "$INSTALL_DIR"
+    
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}[✘] 克隆失败！请检查网络或代理连接。${NC}"
+        return 1
+    fi
+
     cd "$INSTALL_DIR" || exit 1
-    [ ! -d "venv" ] && python3.11 -m venv venv
+
+    echo -e "${YELLOW}[*] 创建 Python 3.11 虚拟环境...${NC}"
+    python3.11 -m venv venv
+
+    echo -e "${YELLOW}[*] 正在安装 Python 依赖库...${NC}"
     . venv/bin/activate
     pip install --upgrade pip
     pip install -r requirements.txt
-    [ ! -f ".env" ] && [ -f ".env.example" ] && cp .env.example .env
+
+    if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+        cp .env.example .env
+        echo -e "${GREEN}[+] 已自动生成 .env 配置文件！${NC}"
+    fi
+
     setup_shortcut
-    echo -e "${GREEN}[✔] 安装与依赖配置完成！${NC}\n"
+    export PATH="$HOME/bin:$PATH"
+
+    echo -e "${GREEN}[✔] 全自动安装与依赖配置大功告成！${NC}"
+    echo -e "${GREEN}[✔] 全局快捷命令 'muse' 已成功注册。${NC}"
+    echo
     read -p "按回车键返回主菜单..." dummy
 }
 
+# 后台启动服务
 do_start() {
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}[✘] 未检测到 muse2api 目录，请先选择 1 进行安装！${NC}"
+        read -p "按回车键返回主菜单..." dummy
+        return
+    fi
+
     cd "$INSTALL_DIR" || exit 1
+    
     if pgrep -f "python -m uvicorn app:app" > /dev/null; then
         echo -e "${YELLOW}[!] 检测到 muse2api 已经在后台运行中。${NC}"
     else
-        echo -e "${YELLOW}正在通过 nohup 启动后台服务 (监听 127.0.0.1:$PORT)...${NC}"
+        echo -e "${YELLOW}[*] 正在通过 nohup 启动后台服务 (监听 127.0.0.1:$PORT)...${NC}"
         nohup venv/bin/python -m uvicorn app:app --host 127.0.0.1 --port $PORT > muse.log 2>&1 &
         sleep 2
+        
         if pgrep -f "python -m uvicorn app:app" > /dev/null; then
-            echo -e "${GREEN}[✔] 服务已成功在后台启动！${NC}"
+            echo -e "${GREEN}[✔] 服务已成功在后台启动！日志已写入 muse.log${NC}"
         else
-            echo -e "${RED}[✘] 启动失败，请检查日志：${NC}"
+            echo -e "${RED}[✘] 启动失败！请检查 muse.log 日志内容：${NC}"
             tail -n 15 muse.log
         fi
     fi
@@ -65,6 +105,7 @@ do_start() {
     read -p "按回车键返回主菜单..." dummy
 }
 
+# 停止服务
 do_stop() {
     OLD_PID=$(pgrep -f "python -m uvicorn app:app")
     if [ -n "$OLD_PID" ]; then
@@ -77,28 +118,44 @@ do_stop() {
     read -p "按回车键返回主菜单..." dummy
 }
 
+# 查看日志
 do_logs() {
-    cd "$INSTALL_DIR" || exit 1
-    [ -f "muse.log" ] && tail -n 30 muse.log || echo -e "${RED}[✘] 没有找到日志文件。${NC}"
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}[✘] 目录不存在。${NC}"
+    else
+        cd "$INSTALL_DIR" || exit 1
+        [ -f "muse.log" ] && tail -n 30 muse.log || echo -e "${RED}[✘] 暂无日志文件。${NC}"
+    fi
     echo
     read -p "按回车键返回主菜单..." dummy
 }
 
+# 编辑配置
 do_config() {
-    [ ! -f "$INSTALL_DIR/.env" ] && echo -e "${RED}[✘] .env 不存在！${NC}" || nano "$INSTALL_DIR/.env"
+    if [ ! -f "$INSTALL_DIR/.env" ]; then
+        echo -e "${RED}[✘] .env 配置文件不存在！${NC}"
+    else
+        nano "$INSTALL_DIR/.env"
+    fi
 }
 
+# 更新代码
 do_update() {
-    cd "$INSTALL_DIR" || exit 1
-    git pull --ff-only
-    . venv/bin/activate
-    pip install -r requirements.txt
-    echo -e "${GREEN}[✔] 更新完成！${NC}"
+    if [ ! -d "$INSTALL_DIR" ]; then
+        echo -e "${RED}[✘] 目录不存在，请先安装！${NC}"
+    else
+        cd "$INSTALL_DIR" || exit 1
+        git pull --ff-only
+        . venv/bin/activate
+        pip install -r requirements.txt
+        echo -e "${GREEN}[✔] 代码更新完成！${NC}"
+    fi
     read -p "按回车键返回主菜单..." dummy
 }
 
+# 卸载清理
 do_uninstall() {
-    printf "确认卸载？[y/N]: "
+    printf "确认要彻底卸载清理吗？[y/N]: "
     read confirm
     case "$confirm" in
         [yY])
@@ -110,16 +167,18 @@ do_uninstall() {
             exit 0
             ;;
     esac
+    read -p "按回车键返回主菜单..." dummy
 }
 
 setup_shortcut >/dev/null 2>&1
+export PATH="$HOME/bin:$PATH"
 
 while true; do
     clear
     echo "=========================================================="
-    echo "            Muse2API Serv00 管理控制面板              "
+    echo "       Muse2API Serv00 全自动一键管理控制面板             "
     echo "=========================================================="
-    echo " 1. 智能化一键安装 / 配置依赖 (Install)"
+    echo " 1. 全自动拉取源码、创建环境与安装依赖 (Install)"
     echo " 2. 后台启动服务 (Start)"
     echo " 3. 停止后台服务 (Stop)"
     echo " 4. 查看最新运行日志 (Logs)"
@@ -143,3 +202,9 @@ while true; do
     esac
 done
 EOF
+
+# 赋予执行权限并同步更新全局命令
+chmod +x m.sh
+cp m.sh ~/bin/muse
+chmod +x ~/bin/muse
+export PATH="$HOME/bin:$PATH"
