@@ -221,7 +221,7 @@ while true; do
     echo " 4. 查看实时运行日志 (Logs)"
     echo " 5. 修改配置文件 (.env)"
     echo " 6. 检查并拉取最新源码 (Git Pull)"
-    echo " 7. 🗑️ 一键完全卸载与清理 (Uninstall)"
+    echo " 7. 一键完全卸载与清理 (Uninstall)"
     echo " 0. 退出脚本 (Exit)"
     echo "=========================================="
     printf "请输入选项 [0-7]: "
