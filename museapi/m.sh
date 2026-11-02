@@ -69,7 +69,29 @@ do_install() {
     export MAKEFLAGS="-j1"
     echo -e "${YELLOW}[!] Rust 源码编译较慢（约 30~60 分钟），请耐心等待，不要中断。${NC}"
     pip install --upgrade pip
-    pip install -r requirements.txt
+    if pip install -r requirements.txt; then
+        echo -e "${GREEN}[✔] 依赖安装成功。${NC}"
+    else
+        echo -e "${YELLOW}[!] 常规安装失败（Serv00 上编译 Rust 容易超出资源限制），切换到纯 Python 备用方案...${NC}"
+        # 备用方案：pydantic v1 是纯 Python 包，无需 Rust 编译；
+        # 已核查全仓库仅 app.py 一处用到 v2 专有 API，打一个单行兼容补丁即可
+        pip install "pydantic==1.10.13"
+        sed -i '' 's/req\.model_dump(by_alias=True)/req.dict(by_alias=True)/' app.py
+        grep -v "^pydantic" requirements.txt > requirements.freebsd.txt
+        if pip install -r requirements.freebsd.txt; then
+            echo -e "${GREEN}[✔] 依赖安装成功（纯 Python 备用方案）。${NC}"
+        else
+            echo -e "${RED}[✘] 依赖安装失败，请把上面的报错信息贴给我看。${NC}"
+            read -p "按回车键返回主菜单..." dummy
+            return 1
+        fi
+    fi
+    # 真实校验：能 import 才算成功，避免"假成功"
+    if ! venv/bin/python -c "import fastapi, pydantic, uvicorn, requests; print('deps ok, pydantic', pydantic.VERSION)"; then
+        echo -e "${RED}[✘] 依赖校验未通过，请把报错贴给我看。${NC}"
+        read -p "按回车键返回主菜单..." dummy
+        return 1
+    fi
 
     if [ ! -f ".env" ] && [ -f ".env.example" ]; then
         cp .env.example .env
@@ -153,7 +175,7 @@ do_update() {
         echo -e "${RED}[✘] 目录不存在，请先安装！${NC}"
     else
         cd "$INSTALL_DIR" || exit 1
-        git checkout -- requirements.txt 2>/dev/null
+        git checkout -- requirements.txt app.py 2>/dev/null
         git pull --ff-only
         # 更新后重新应用 FreeBSD 兼容修改（uvloop 不支持 FreeBSD）
         [ -f requirements.txt ] && sed -i '' 's/uvicorn\[standard\]/uvicorn/' requirements.txt
