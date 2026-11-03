@@ -45,11 +45,13 @@ print_tips
 # ==========================================
 if [ "$1" = "status" ]; then
 ps -U "$USER" -o pid,stat,%mem,rss,command 2>/dev/null | grep -E 'esbuild-register|node' | grep -v grep
+print_tips
 exit 0
 elif [ "$1" = "stop" ]; then
 echo "🛑 正在停止 TeleBox 进程..."
 killall -9 node esbuild 2>/dev/null || true
 echo "✅ 已停止。"
+print_tips
 exit 0
 elif [ "$1" = "restart" ]; then
 echo "🔄 正在安全重启 TeleBox..."
@@ -58,6 +60,7 @@ sleep 1
 cd "$TARGET_DIR" || exit 1
 nohup bash "$0" start-daemon >> "$TARGET_DIR/telebox.log" 2>&1 &
 echo "✅ TeleBox 已在后台重新启动！"
+print_tips
 exit 0
 elif [ "$1" = "start-daemon" ]; then
 cd "$TARGET_DIR" || exit 1
@@ -69,7 +72,9 @@ LS_FILE="${TB_LOCALSTORAGE_FILE:-$CACHE_BASE/telebox/node-localstorage}"
 mkdir -p "$(dirname "$LS_FILE")" 2>/dev/null || true
 # 内存压缩 / 上限：严格限制 V8 堆内存，防止爆 Serv00 / CT8 共享主机限额
 export NODE_OPTIONS="--localstorage-file=$LS_FILE --max-old-space-size=$MEMORY_MB --expose-gc"
-exec node -r tsconfig-paths/register -r "$TARGET_DIR/scripts/esbuild-register.cjs" "$TARGET_DIR/src/index.ts"
+NODE_BIN="node"
+if [ -x "$HOME/.bin/node" ]; then NODE_BIN="$HOME/.bin/node"; fi
+exec "$NODE_BIN" -r tsconfig-paths/register -r "$TARGET_DIR/scripts/esbuild-register.cjs" "$TARGET_DIR/src/index.ts"
 elif [ "$1" = "uninstall" ]; then
 echo "🗑️ 正在彻底卸载清理 TeleBox（目录 + 远程下载的安装文件一起清）..."
 killall -9 node esbuild 2>/dev/null || true
@@ -160,36 +165,31 @@ fi
 echo "==> 正在配置运行环境与独立权限..."
 devil binexec on >/dev/null 2>&1 || true
 mkdir -p ~/.bin
-if [ -f /usr/local/bin/node24]; then
+if [ -f /usr/local/bin/node24 ]; then
 echo "💡 检测到 /usr/local/bin/node24，已指向 ~/.bin/node"
 ln -sf /usr/local/bin/node24 ~/.bin/node
 ln -sf /usr/local/bin/npm24 ~/.bin/npm 2>/dev/null || true
 else
 echo "ℹ️ 未检测到 /usr/local/bin/node24，继续使用系统默认 node。"
 fi
+export PATH="$HOME/.bin:/usr/local/bin:/usr/bin:/bin"
+export PYTHON=/usr/local/bin/python3
+if ! grep -q 'export PATH=$HOME/.bin' "$HOME/.bashrc" 2>/dev/null; then
+  echo 'export PATH=$HOME/.bin:/usr/local/bin:/usr/bin:/bin' >> "$HOME/.bashrc"
+  echo 'export PYTHON=/usr/local/bin/python3' >> "$HOME/.bashrc"
+fi
+echo "ℹ️ 安装阶段当前 Node：$(node -v 2>/dev/null || echo unknown)（应为 v24.x，若仍为 v22，说明 ~/.bin 未生效，EBADENGINE 警告会继续）"
 
 # 3. 创建目录并克隆项目
 echo "==> 正在创建目录并克隆 TeleBox 项目..."
 mkdir -p "$TARGET_DIR" || fail "创建 $TARGET_DIR 失败。"
 cd "$TARGET_DIR" || fail "进入 $TARGET_DIR 失败。"
-git clone https://github.com/TeleBoxOrg/TeleBox.git. || fail "克隆 TeleBox 失败，请检查网络后重试。"
+git clone https://github.com/TeleBoxOrg/TeleBox.git . || fail "克隆 TeleBox 失败，请检查网络后重试。"
 [ -f "package.json" ] || fail "克隆后没有找到 package.json，克隆不完整，请删除 $TARGET_DIR 后重试。"
 
 # 4. 系统检测与 package.json 适配（FreeBSD 剥离 canvas，Serv00 / CT8 均为 FreeBSD）
 echo "==> 正在检测系统环境并优化 package.json..."
-python3 -c '
-import json, platform
-with open("package.json", "r", encoding="utf-8") as f:
-data = json.load(f)
-if platform.system() == "FreeBSD":
-print("💡 [系统适配] 检测到 FreeBSD (Serv00 / CT8) 环境，正在自动剥离 canvas 依赖...")
-for key in ["dependencies", "devDependencies"]:
-if key in data and "canvas" in data[key]:
-del data[key]["canvas" ] else:
-print("💡 [系统适配] 检测到 Linux 环境，保持标准依赖...")
-with open("package.json", "w", encoding="utf-8") as f:
-json.dump(data, f, indent=2)
-' || fail "处理 package.json 失败。"
+python3 -c 'import json, platform; d=json.load(open("package.json")); [d[k].pop("canvas", None) for k in ("dependencies", "devDependencies") if platform.system()=="FreeBSD" and k in d ]; json.dump(d, open("package.json", "w"), indent=2)' || fail "处理 package.json 失败。"
 
 # 5. 配置加速镜像并安全安装（失败直接停下，不谎报成功）
 echo "==> 配置国内 npm 加速镜像..."
@@ -212,7 +212,7 @@ npm install --maxsockets 1 || fail "依赖安装失败，脚本已停止，没�
 fi
 
 for MOD in esbuild tsconfig-paths; do
-if [! -d "node_modules/$MOD" ]; then
+if [ ! -d "node_modules/$MOD" ]; then
 fail "依赖不完整：缺少 node_modules/$MOD，说明 npm install 没有装全，不能继续启动。"
 fi
 done
@@ -237,10 +237,10 @@ trap 'echo ""; echo "ℹ️ 已中断前台启动，继续检查登录结果..."
 npm start
 START_CODE=$?
 trap - INT
-if [! -f "$TARGET_DIR/config.json" ]; then
+if [ ! -f "$TARGET_DIR/config.json" ]; then
 fail "未检测到 $TARGET_DIR/config.json，说明登录未完成，脚本已停止，没有转后台。请重新运行登录流程，不要直接用 tbr 重启。"
 fi
-if [ "$START_CODE" -ne 0] && [ "$START_CODE" -ne 130] && [ "$START_CODE" -ne 129]; then
+if [ "$START_CODE" -ne 0 ] && [ "$START_CODE" -ne 130 ] && [ "$START_CODE" -ne 129 ]; then
 echo "⚠️ 前台启动退出码 $START_CODE，但 config.json 已存在，继续尝试转后台；若后台也起不来，请查看 telebox.log。"
 fi
 
@@ -253,11 +253,11 @@ echo "ℹ️ 当前不是文件运行，正在从仓库下载 os.sh 到 $TARGET_
 if command -v curl >/dev/null 2>&1; then
 curl -Ls "$SCRIPT_URL" -o "$TARGET_DIR/os.sh" 2>/dev/null || true
 fi
-if [! -s "$TARGET_DIR/os.sh" ] && command -v wget >/dev/null 2>&1; then
+if [ ! -s "$TARGET_DIR/os.sh" ] && command -v wget >/dev/null 2>&1; then
 wget -q -O "$TARGET_DIR/os.sh" "$SCRIPT_URL" 2>/dev/null || true
 fi
 fi
-if [! -s "$TARGET_DIR/os.sh" ]; then
+if [ ! -s "$TARGET_DIR/os.sh" ]; then
 fail "获取 $TARGET_DIR/os.sh 失败：既不是文件运行，也无法从仓库下载，后台守护无法启动，请勿继续。"
 fi
 bash -n "$TARGET_DIR/os.sh" || fail "下载/复制的 $TARGET_DIR/os.sh 语法检查失败，后台守护无法启动。"
@@ -281,7 +281,7 @@ export HOME="$HOME"
 export PATH="\$HOME/.bin:/usr/local/bin:/usr/bin:/bin"
 export PYTHON=/usr/local/bin/python3
 devil binexec on >/dev/null 2>&1 || true
-if [! -f "\$HOME/telebox/config.json" ]; then
+if [ ! -f "\$HOME/telebox/config.json" ]; then
 exit 0
 fi
 if ! pgrep -f 'esbuild-register.cjs' >/dev/null 2>&1; then
@@ -304,31 +304,41 @@ fi
 fi
 rm -f /tmp/crontab.tmp
 
-# 10. 写入快捷别名，并验写入结果（子 shell 的 source 改不了父 shell，必须提醒重新登录或 source）
+# 10. 写入快捷别名（修复版：不再只看标记就跳过，逐条补齐；按当前 shell 写，bash 就写 .bashrc，不因 .zshrc 存在就写错地方）
+for RC in "$HOME/.bashrc" "$HOME/.zshrc"; do
+  if [ -f "$RC" ]; then
+    touch "$RC" 2>/dev/null || true
+  fi
+done
 SHELL_RC="$HOME/.bashrc"
-[ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
+case "$SHELL" in
+  *zsh*) SHELL_RC="$HOME/.zshrc" ;;
+  *) SHELL_RC="$HOME/.bashrc" ;;
+esac
 if ! grep -q "# TeleBox极简快捷指令" "$SHELL_RC" 2>/dev/null; then
-echo "" >> "$SHELL_RC"
-echo "# TeleBox极简快捷指令" >> "$SHELL_RC"
-echo "alias ts='bash $TARGET_DIR/os.sh status'" >> "$SHELL_RC"
-echo "alias tbr='bash $TARGET_DIR/os.sh restart'" >> "$SHELL_RC"
-echo "alias tp='bash $TARGET_DIR/os.sh stop'" >> "$SHELL_RC"
-echo "alias td='bash $TARGET_DIR/os.sh uninstall'" >> "$SHELL_RC"
+  echo "" >> "$SHELL_RC"
+  echo "# TeleBox极简快捷指令" >> "$SHELL_RC"
 fi
-if grep -q "alias tbr=" "$SHELL_RC" 2>/dev/null; then
-echo "✅ 快捷别名已写入 $SHELL_RC。"
+for ALIAS_LINE in "alias ts='bash $TARGET_DIR/os.sh status'" "alias tbr='bash $TARGET_DIR/os.sh restart'" "alias tp='bash $TARGET_DIR/os.sh stop'" "alias td='bash $TARGET_DIR/os.sh uninstall'"; do
+  ALIAS_NAME="$(echo "$ALIAS_LINE" | cut -d' ' -f2 | cut -d= -f1)"
+  if ! grep -q "^$ALIAS_NAME=" "$SHELL_RC" 2>/dev/null; then
+    echo "$ALIAS_LINE" >> "$SHELL_RC"
+  fi
+done
+if grep -q "alias ts=" "$SHELL_RC" && grep -q "alias tbr=" "$SHELL_RC" && grep -q "alias tp=" "$SHELL_RC" && grep -q "alias td=" "$SHELL_RC"; then
+  echo "✅ 快捷别名已写入 $SHELL_RC（ts/tbr/tp/td 四条齐全）。"
 else
-echo "⚠️ 快捷别名写入失败，请手动检查 $SHELL_RC。"
+  echo "⚠️ 快捷别名写入不全，请手动检查 $SHELL_RC，缺哪条补哪条。"
+  grep -n "alias t" "$SHELL_RC" 2>/dev/null || true
 fi
 echo "ℹ️ 别名在当前终端不一定立刻生效，请重新登录，或运行：source $SHELL_RC"
 echo "ℹ️ 验别名：source $SHELL_RC 后运行 type tbr，应显示 alias。"
-# shellcheck disable=SC1090
 source "$SHELL_RC" 2>/dev/null || true
 
 echo "=================================================="
 echo "🎯 极轻量单脚本部署全部完成！"
 echo "--------------------------------------------------"
-echo "💡 ：在 Telegram 任意聊天中向自己发送.ping 或.help"
+echo "💡 【验证方法】：在 Telegram 任意聊天中向自己发送 .ping 或 .help"
 echo " 看到 UserBot 正常回复即代表搭建成功！"
 echo "--------------------------------------------------"
 print_tips
