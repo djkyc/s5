@@ -436,8 +436,8 @@ if [ -f "$HOME/.zshrc" ] && ! grep -Fq 'export PATH="$HOME/bin:$PATH"' "$HOME/.z
 echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc" || true
 fi
 if [ "$quiet" -eq 0 ]; then
-echo "快捷键已装好：退出后输入 tge 就能再进菜单。"
-echo "注意：当前这个终端要重登一次 SSH，或先跑 export PATH=\"\$HOME/bin:\$PATH\"，tge 才直接生效；也可以直接跑 ~/bin/tge。"
+echo -e "快捷键已装好：退出后输入 \033[1;32mtge\033[0m 就能再进菜单。"
+echo -e "注意：当前这个终端要重登一次 SSH，或先跑 export PATH=\"\$HOME/bin:\$PATH\"，\033[1;32mtge\033[0m 才直接生效；也可以直接跑 ~/bin/tge。"
 fi
 return 0
 }
@@ -495,15 +495,21 @@ remove_crontab
 rm -rf "$DIR" "$VENV" "$WATCHDOG"
 rm -f "$HOME/bin/tge"
 rm -f "$HOME/mail2tg.sh"
+UNINSTALLED=1
 echo "卸载完了，连本脚本 ~/mail2tg.sh 和快捷键 tge 也已删掉。如果以后不用这些邮箱授权码了，记得去各邮箱后台吊销授权码 / 应用专用密码，删本地文件不等于吊销。"
 return 0
 }
 
 setup_shortcut quiet || true
+UNINSTALLED=0
 while true; do
 echo ""
 echo "================ Mail2Telegram Serv00 一键部署 ================"
-echo "提示：退出后输入 tge 可再次呼出菜单"
+if [ "$UNINSTALLED" -eq 1 ]; then
+echo "提示：已删除清理，欢迎再次使用拉取命令重装"
+else
+echo -e "提示：退出后输入 \033[1;32mtge\033[0m 可再次呼出菜单"
+fi
 echo " 1) 一键部署（一步一步提示：权限 → 依赖 → 机器人 → 邮箱 → 启动）"
 echo " 2) 只填 / 改配置（重新走机器人 + 邮箱向导，旧配置会自动备份）"
 echo " 3) 前台测试运行（Ctrl+C 停止，不进后台）"
@@ -532,7 +538,14 @@ pause
 7) show_status; pause;;
 8) setup_crontab; pause;;
 9) uninstall_service; pause;;
-0) echo "退出。以后输入 tge 可再次呼出菜单。"; break;;
+0)
+if [ "$UNINSTALLED" -eq 1 ]; then
+echo "退出。已经删除清理了，欢迎再次使用："
+echo "curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh -o ~/mail2tg.sh && chmod +x ~/mail2tg.sh && ./mail2tg.sh"
+else
+echo -e "退出。以后输入 \033[1;32mtge\033[0m 可再次呼出菜单。"
+fi
+break;;
 *) echo "没这个序号，重新选。";;
 esac
 done
