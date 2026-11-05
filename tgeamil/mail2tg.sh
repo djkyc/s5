@@ -556,20 +556,20 @@ def main(argv):
         print("要设备码失败：%s" % dc.get("error", dc))
         return 1
     print("")
-    # 设备码页固定用 microsoft.com/devicelogin（微软返回的 verification_uri 有时是 www.microsoft.com/link，用户反馈那边的码不认）。
-    _uri = "https://microsoft.com/devicelogin"
+    # 设备码页用微软返回的 verification_uri（Thunderbird 公开 ID 下就是 https://www.microsoft.com/link，用户实测这个地址输码能正常验证）。
+    _uri = dc.get("verification_uri", "https://microsoft.com/devicelogin")
     _code = dc["user_code"]
     # OSC 8 超链接（点一下在浏览器打开）+ OSC 52（请终端把用户码写进剪贴板）；不支持的终端会忽略转义。
-    # 网址用亮青粗体、用户码用亮黄粗体，显眼好找。
-    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\\x1b[1;96m%s\x1b[0m\x1b]8;;\x1b\\" % (_uri, _uri))
-    print("网址（点不开就手动复制）：\x1b[1;96m%s\x1b[0m" % _uri)
+    # 网址用亮绿粗体、用户码用亮黄粗体，显眼好找。
+    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\\x1b[1;92m%s\x1b[0m\x1b]8;;\x1b\\" % (_uri, _uri))
+    print("网址（点不开就手动复制）：\x1b[1;92m%s\x1b[0m" % _uri)
     try:
         sys.stdout.write("\x1b]52;c;%s\x1b\\" % base64.b64encode(_code.encode("utf-8")).decode("ascii")); sys.stdout.flush()
     except Exception:
         pass
     print("输入这串用户码（15 分钟内有效，已尝试自动复制到剪贴板）：\x1b[1;93m%s\x1b[0m" % _code)
     print("用 %s 这个账号登录并同意 IMAP 权限。" % email)
-    print("只在 microsoft.com/devicelogin 输码，别在别的页面输。")
+    print(f"只在 {_uri} 输码，别在别的页面输。")
     print("")
     print("第 3 步：等你授权完，本脚本自动去换令牌（按 Ctrl+C 可取消）……")
     device_code = dc["device_code"]
