@@ -595,9 +595,11 @@ if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; r
 if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
-if ! python3 - <<'PYEOF'
+if ! python3 - "$DIR" <<'PYEOF'
 import os, sys
-path = os.path.join(os.environ["DIR"], "main.py")
+# DIR 是 shell 变量，没有 export，子进程 python 看不到 os.environ["DIR"]，
+# 所以改成命令行参数传进来（s13 上就是在这里报 KeyError: 'DIR'）。
+path = os.path.join(sys.argv[1], "main.py")
 src = open(path, encoding="utf-8").read()
 old = "server.login(email_config['EMAIL'], email_config['PASSWORD'])"
 count = src.count(old)
