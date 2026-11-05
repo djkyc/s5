@@ -634,7 +634,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v2" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -709,7 +709,7 @@ def _selected_count(server, folder):
 # 4) 兼容：把 IDLE+SEARCH 的监听改成轮询。
 #    2925 不支持 SEARCH，新浪会断 IDLE，轮询只用 SELECT 取数 + FETCH 取信，
 #    每 60 秒查一次，连接断了就重连。
-if "轮询查新邮件 v2" not in src:
+if "轮询查新邮件 v3" not in src:
     start = src.find("def idle_mail_listener")
     end = src.find("\ndef main():", start)
     if start < 0 or end < 0:
@@ -717,7 +717,7 @@ if "轮询查新邮件 v2" not in src:
         sys.exit(1)
     listener = '''def idle_mail_listener(email_config, folder):
     # 兼容版：轮询查新邮件，不用 IDLE、不用 SEARCH。
-    # 轮询查新邮件 v2：每轮新建连接。
+    # 轮询查新邮件 v3：每轮新建连接 + 绑定删了自动退出。
     # 2925 的 IMAP 不认 SEARCH；新浪会在 60 秒空闲后把连接断开，
     # v1 是“一个连接复用、睡 60 秒再 SELECT”，每轮都会断、连错 5 次
     # 就报重试上限（s13 上 15:29 新浪那条就是这么来的）。
@@ -733,6 +733,9 @@ if "轮询查新邮件 v2" not in src:
     email_provider = 'gmail' if 'gmail.com' in email_config['EMAIL'] else 'other'
 
     while True:
+        if email_config['EMAIL'] in _REMOVED_MAILBOXES:
+            logger.info(f"{email_config['EMAIL']} 的绑定已删，监听退出。")
+            return
         server = None
         try:
             server = imaplib2.IMAP4_SSL(email_config['IMAP_SERVER'], email_config['IMAP_SERVER_PORT'])
@@ -1085,8 +1088,703 @@ def run_command_bot():
             print("补丁停：找不到 main() 里等监听线程的那行，一处都没改。")
             sys.exit(1)
         src = src.replace(anchor, "    bot_thread = threading.Thread(target=run_command_bot, daemon=True)\n    bot_thread.start()\n" + anchor, 1)
+
+# 6) 机器人里删邮箱绑定：/rmmail /rmmailok（两步确认，只认主人）。
+#    只删机器人这边的绑定（把邮箱从 config.py 的 EMAILS 里去掉），不删服务器上的信；
+#    加邮箱还是得在服务器菜单 2 里配（密码/授权码只能在终端里输，不能发到聊天里）。
+#    删完监听线程下次轮询看到邮箱在 _REMOVED_MAILBOXES 里就自己退出，不用重启进程；
+#    load_config 改成每次 reload，命令不用重启就能看到新配置。
+if "importlib.reload(config)" not in src:
+    old_lc = "def load_config():\n    import config\n    return config"
+    if old_lc not in src:
+        print("补丁停：找不到 load_config，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_lc, "def load_config():\n    import config\n    import importlib\n    importlib.reload(config)\n    return config", 1)
+
+if "def cmd_rmmail" not in src:
+    rmmail = r'''_PENDING_RMMAIL = {}
+_REMOVED_MAILBOXES = set()
+
+
+def _rewrite_config_py(emails):
+    # 把新的邮箱列表写回 config.py（原子替换，权限 600），其他配置项原样保留。
+    import config as _cfg
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+    lines = ["EMAILS = ["]
+    for e in emails:
+        lines.append("    {")
+        for k, v in e.items():
+            lines.append(f"        {k!r}: {v!r},")
+        lines.append("    },")
+    lines.append("]")
+    for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_JUNK_CHAT_ID",
+                 "RETRY_LIMIT", "RETRY_DELAY", "RETRY_PAUSE", "RECONNECT_INTERVAL",
+                 "POLL_INTERVAL"):
+        if hasattr(_cfg, name):
+            lines.append(f"{name} = {getattr(_cfg, name)!r}")
+    text = "\n".join(lines) + "\n"
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, 0o600)
+    import py_compile
+    py_compile.compile(tmp, doraise=True)
+    os.replace(tmp, path)
+
+
+async def cmd_rmmail(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    config = load_config()
+    args = context.args
+    if not args:
+        lines = ["邮箱列表（删绑定用 /rmmail 邮箱号）："]
+        for i, e in enumerate(config.EMAILS, 1):
+            lines.append(f"{i}. {e['EMAIL']}")
+        lines.append("删绑定只删机器人这边的配置，不删服务器上的信；加回来用服务器菜单 2。")
+        await update.message.reply_text("\n".join(lines))
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    if len(config.EMAILS) <= 1:
+        await update.message.reply_text("就剩这一个邮箱了，不能删光。想换邮箱用服务器菜单 2 重新配。")
+        return
+    key = (str(update.effective_chat.id), args[0])
+    _PENDING_RMMAIL[key] = (time.time(), email_config['EMAIL'])
+    await update.message.reply_text(
+        f"要删掉这个邮箱的绑定吗？\n{email_config['EMAIL']}\n"
+        f"删完它就不再推送了，监听 60 秒内停掉；服务器上的信不动。\n"
+        f"确认请在 5 分钟内发：/rmmailok {args[0]}\n不删就不用管，5 分钟后作废。")
+
+
+async def cmd_rmmailok(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("用法：/rmmailok 邮箱号，例如 /rmmailok 3")
+        return
+    key = (str(update.effective_chat.id), args[0])
+    pending = _PENDING_RMMAIL.pop(key, None)
+    if not pending:
+        await update.message.reply_text("没有等确认的删绑定，先发 /rmmail 邮箱号。")
+        return
+    created, email = pending
+    if time.time() - created > 300:
+        await update.message.reply_text("确认超时了（超过 5 分钟），没删，重新发 /rmmail。")
+        return
+    config = load_config()
+    try:
+        idx = int(args[0]) - 1
+    except Exception:
+        await update.message.reply_text("邮箱号要是数字，用 /ls 看编号。")
+        return
+    if idx < 0 or idx >= len(config.EMAILS):
+        await update.message.reply_text("没有这个编号的邮箱，用 /ls 看编号。")
+        return
+    if config.EMAILS[idx]['EMAIL'] != email:
+        await update.message.reply_text("邮箱列表变了，编号对不上，重新发 /rmmail。")
+        return
+    if len(config.EMAILS) <= 1:
+        await update.message.reply_text("就剩这一个邮箱了，不能删光。")
+        return
+    remaining = [e for i, e in enumerate(config.EMAILS) if i != idx]
+    try:
+        _rewrite_config_py(remaining)
+    except Exception as e:
+        await update.message.reply_text(f"写配置失败，没删：{e}")
+        return
+    _REMOVED_MAILBOXES.add(email)
+    logger.info(f"主人删邮箱绑定：{email}")
+    await update.message.reply_text(f"删了绑定：{email}\n它的监听 60 秒内停掉；服务器上的信还在。加回来用服务器菜单 2。")
+
+
+'''
+    anchor = "def run_command_bot():"
+    if anchor not in src:
+        print("补丁停：找不到 run_command_bot，一处都没改。")
+        sys.exit(1)
+    src = src.replace(anchor, rmmail + anchor, 1)
+
+if 'CommandHandler("rmmail"' not in src:
+    old_reg = '            app.add_handler(CommandHandler("delok", cmd_delok))'
+    if old_reg not in src:
+        print("补丁停：找不到 delok 注册行，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_reg, old_reg + '\n            app.add_handler(CommandHandler("rmmail", cmd_rmmail))\n            app.add_handler(CommandHandler("rmmailok", cmd_rmmailok))', 1)
+
+if "/rmmail 3" not in src:
+    old_help = '"/delok 1 1 7 确认删除")'
+    if old_help not in src:
+        print("补丁停：找不到帮助文本，一处都没改。")
+        sys.exit(1)
+    bs = chr(92)
+    new_help = '"/delok 1 1 7 确认删除' + bs + 'n"' + "\n" + '        "/rmmail 3 删 3 号邮箱的绑定（要再发 /rmmailok 确认）' + bs + 'n"' + "\n" + '        "/rmmailok 3 确认删绑定")'
+    src = src.replace(old_help, new_help, 1)
+
+
+# 7) 机器人里启停监听：菜单里的 ▶️/⏸️ 按钮用。
+#    原来 main() 里监听线程死光程序就退出，机器人一停就整个没了；
+#    改成 main() 只负责起监听线程 + 起命令机器人，然后一直等着，
+#    启停只开关监听线程，命令机器人一直活着。
+if "def start_monitor_threads" not in src:
+    helpers = '''_MONITOR_BY_EMAIL = {}
+_MONITOR_LOCK = threading.Lock()
+_STOP_LISTENERS = threading.Event()
+
+
+def start_monitor_threads():
+    # 给还没有监听线程的邮箱起线程；已在跑的不重复起。返回新起的邮箱。
+    _STOP_LISTENERS.clear()
+    config = load_config()
+    started = []
+    with _MONITOR_LOCK:
+        for email_config in config.EMAILS:
+            email = email_config['EMAIL']
+            if email in _REMOVED_MAILBOXES:
+                continue
+            t = _MONITOR_BY_EMAIL.get(email)
+            if t is not None and t.is_alive():
+                continue
+            t = threading.Thread(target=monitor_email, args=(email_config,))
+            _MONITOR_BY_EMAIL[email] = t
+            t.start()
+            started.append(email)
+    return started
+
+
+def stop_monitor_threads():
+    # 停掉所有监听线程（命令机器人本身不停），最多等 70 秒。返回还活着的邮箱。
+    _STOP_LISTENERS.set()
+    deadline = time.time() + 70
+    for t in list(_MONITOR_BY_EMAIL.values()):
+        left = deadline - time.time()
+        if left <= 0:
+            break
+        t.join(timeout=left)
+    with _MONITOR_LOCK:
+        return [e for e, t in _MONITOR_BY_EMAIL.items() if t.is_alive()]
+
+
+'''
+    anchor = "def main():"
+    if anchor not in src:
+        print("补丁停：找不到 def main()，一处都没改。")
+        sys.exit(1)
+    src = src.replace(anchor, helpers + anchor, 1)
+    start = src.find("def main():")
+    end = src.find('if __name__ == "__main__":', start)
+    if start < 0 or end < 0:
+        print("补丁停：找不到 main() 边界，一处都没改。")
+        sys.exit(1)
+    new_main = '''def main():
+    logger.info("开始监听多个邮箱账户")
+    start_monitor_threads()
+    bot_thread = threading.Thread(target=run_command_bot, daemon=True)
+    bot_thread.start()
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        pass
+    logger.info("程序退出。")
+
+
+'''
+    src = src[:start] + new_main + src[end:]
+
+# 监听轮询里用 _STOP_LISTENERS.wait 代替睡死，点了停止能马上醒、马上退；
+# 循环开头看到停了就退出线程。
+if "_STOP_LISTENERS.is_set()" not in src:
+    old = "        if email_config['EMAIL'] in _REMOVED_MAILBOXES:"
+    if old not in src:
+        print("补丁停：找不到监听里的 _REMOVED 检查，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old, "        if _STOP_LISTENERS.is_set():\n            logger.info(f\"{email_config['EMAIL']} 的监听已停。\")\n            return\n" + old, 1)
+if "_STOP_LISTENERS.wait(POLL_INTERVAL)" not in src:
+    for a, b in (("time.sleep(RETRY_DELAY)", "_STOP_LISTENERS.wait(RETRY_DELAY)"),
+                 ("time.sleep(POLL_INTERVAL)", "_STOP_LISTENERS.wait(POLL_INTERVAL)"),
+                 ("time.sleep(RETRY_PAUSE)", "_STOP_LISTENERS.wait(RETRY_PAUSE)")):
+        if a not in src:
+            print("补丁停：找不到监听里的 sleep，一处都没改。")
+            sys.exit(1)
+        src = src.replace(a, b, 1)
+
+# 8) 机器人内菜单：/menu、/start 打开点按钮的菜单，不用记命令。
+#    绑定邮箱只能在服务器上做（密码/授权码不能发到聊天里），菜单里只给指路；
+#    邮箱列表、看信、删信、解绑、启停、看日志都在机器人里点按钮完成。
+if "CallbackQueryHandler" not in src:
+    old_imp = "from telegram.ext import ApplicationBuilder, CommandHandler"
+    if old_imp not in src:
+        print("补丁停：找不到 telegram 导入行，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_imp, "from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler\nfrom telegram import InlineKeyboardButton, InlineKeyboardMarkup", 1)
+
+if "def _menu_keyboard" not in src:
+    menu = r'''# 菜单 v1：机器人内菜单（/menu、/start），点按钮操作
+def _menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📮 邮箱列表", callback_data="menu:ls")],
+        [InlineKeyboardButton("➕ 绑定邮箱", callback_data="menu:bind")],
+        [InlineKeyboardButton("🔗 解绑邮箱", callback_data="menu:rm")],
+        [InlineKeyboardButton("▶️ 启动运行", callback_data="menu:start"),
+         InlineKeyboardButton("⏸️ 停止运行", callback_data="menu:stop")],
+        [InlineKeyboardButton("📋 查看日志", callback_data="menu:logs")],
+    ])
+
+
+def _menu_text():
+    return ("📮 Mail2Telegram 菜单\n"
+            "点下面的按钮操作，也可以用命令：\n"
+            "/ls /show /del /rmmail /read")
+
+
+def _redact_log_text(text):
+    # 日志里有 Telegram 发消息的 URL，带着机器人 Token，必须先擦掉再发出来
+    text = re.sub(r"bot\d+:[A-Za-z0-9_\-]{20,}", "bot[已隐藏]", text)
+    text = re.sub(r"(TELEGRAM_BOT_TOKEN\s*=\s*['\"]?)[^'\"\s]+", r"\1[已隐藏]", text)
+    return text
+
+
+def _cmd_fetch_body(server, seq):
+    # 取一封信的全文（标题 + 发件人 + 日期 + 正文，最多 2500 字）
+    typ, data = server.fetch(str(seq), "(RFC822)")
+    if typ != "OK" or not data or not isinstance(data[0], tuple):
+        return None
+    msg = email.message_from_bytes(data[0][1])
+    subject = decode_header_string(msg.get("Subject") or "(无主题)")
+    sender = decode_header_string(msg.get("From") or "")
+    date = msg.get("Date") or ""
+    body = get_email_content(msg) or ""
+    return subject, sender, date, body
+
+
+async def _cb_answer(query, text=None):
+    try:
+        if text:
+            await query.answer(text)
+        else:
+            await query.answer()
+    except Exception:
+        pass
+
+
+async def _cb_edit(query, text, markup=None):
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
+    except Exception:
+        pass
+
+
+async def _cb_check_owner(update):
+    q = update.callback_query
+    if not q:
+        return None
+    try:
+        if str(update.effective_chat.id) == str(load_config().TELEGRAM_CHAT_ID):
+            return q
+    except Exception:
+        pass
+    try:
+        await q.answer("不是主人，不理你。", show_alert=True)
+    except Exception:
+        pass
+    return None
+
+
+async def _cb_show_menu(query):
+    await _cb_edit(query, _menu_text(), _menu_keyboard())
+
+
+async def _cb_show_mailboxes(query):
+    config = load_config()
+    rows = []
+    for i, e in enumerate(config.EMAILS, 1):
+        rows.append([InlineKeyboardButton(f"{i}. {e['EMAIL']}", callback_data=f"mb:{i}")])
+    rows.append([InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")])
+    await _cb_edit(query, "📮 邮箱列表（点一个进文件夹）：", InlineKeyboardMarkup(rows))
+
+
+async def _cb_show_folders(query, midx):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        names = _cmd_folders(server)
+        rows = []
+        for i, name in enumerate(names, 1):
+            rows.append([InlineKeyboardButton(f"{name}", callback_data=f"fld:{midx}:{i}")])
+        rows.append([InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")])
+        await _cb_edit(query, f"{email_config['EMAIL']} 的文件夹（点一个看最新 5 封）：", InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"列文件夹失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+async def _cb_show_folder(query, midx, fidx):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if total == 0:
+            await _cb_edit(query, f"{folder} 里没有信。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")]]))
+            return
+        start = max(1, total - 4)
+        text = f"{email_config['EMAIL']} / {folder}（共 {total} 封，最新 {total - start + 1} 封，点一封查看/删除）："
+        rows = []
+        for num in range(total, start - 1, -1):
+            subject, sender, date = _cmd_fetch_header(server, num)
+            if subject is None:
+                subject = "(取不出来)"
+            rows.append([InlineKeyboardButton(f"{num}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}")])
+        rows.append([InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")])
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"看信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+async def _cb_show_mail(query, midx, fidx, seq):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号不对，这个文件夹现在共 {total} 封。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]))
+            return
+        got = _cmd_fetch_body(server, int(seq))
+        if got is None:
+            await _cb_edit(query, "这封信取不出来。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]))
+            return
+        subject, sender, date, body = got
+        text = f"主题：{subject}\n发件人：{sender}\n日期：{date}\n\n{body[:2500]}"
+        rows = [[InlineKeyboardButton("🗑️ 删除这封", callback_data=f"del:{midx}:{fidx}:{seq}")],
+                [InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"看信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+async def _cb_del_confirm(query, midx, fidx, seq):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号不对，这个文件夹现在共 {total} 封。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]))
+            return
+        subject, sender, date = _cmd_fetch_header(server, seq)
+        if subject is None:
+            subject, sender = "(取不到标题)", ""
+        text = (f"要删这封吗？\n{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}\n发件人：{sender}\n")
+        rows = [[InlineKeyboardButton("✅ 确认删除", callback_data=f"delok:{midx}:{fidx}:{seq}")],
+                [InlineKeyboardButton("❌ 取消", callback_data=f"fld:{midx}:{fidx}")]]
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"删信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+async def _cb_del_execute(query, midx, fidx, seq):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号变了，现在共 {total} 封，没删。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]))
+            return
+        subject, sender, date = _cmd_fetch_header(server, seq)
+        if subject is None:
+            subject = "(取不到标题)"
+        server.store(str(seq), "+FLAGS", r"(\Deleted)")
+        server.expunge()
+        logger.info(f"主人删信：{email_config['EMAIL']} / {folder} 第 {seq} 封：{subject}")
+        await _cb_edit(query, f"删了：{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}",
+                       InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}")]]))
+    except Exception as e:
+        await _cb_edit(query, f"删信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+async def _cb_show_unbind(query):
+    config = load_config()
+    rows = []
+    for i, e in enumerate(config.EMAILS, 1):
+        rows.append([InlineKeyboardButton(f"{i}. {e['EMAIL']}", callback_data=f"rm:{i}")])
+    rows.append([InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")])
+    await _cb_edit(query, "🔗 解绑邮箱（点一个解绑，只删机器人这边的配置）：", InlineKeyboardMarkup(rows))
+
+
+async def _cb_unbind_confirm(query, midx):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, _menu_keyboard())
+        return
+    config = load_config()
+    if len(config.EMAILS) <= 1:
+        await _cb_edit(query, "就剩这一个邮箱了，不能删光。想换邮箱用服务器菜单 2 重新配。", _menu_keyboard())
+        return
+    text = (f"要解绑这个邮箱吗？\n{email_config['EMAIL']}\n"
+            f"解绑后它就不再推送了，监听 60 秒内停掉；服务器上的信不动。")
+    rows = [[InlineKeyboardButton("✅ 确认解绑", callback_data=f"rmok:{midx}")],
+            [InlineKeyboardButton("❌ 取消", callback_data="menu:rm")]]
+    await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+
+
+async def _cb_unbind_execute(query, midx):
+    config = load_config()
+    try:
+        idx = int(midx) - 1
+    except Exception:
+        await _cb_edit(query, "邮箱号不对。", _menu_keyboard())
+        return
+    if idx < 0 or idx >= len(config.EMAILS):
+        await _cb_edit(query, "没有这个编号的邮箱。", _menu_keyboard())
+        return
+    if len(config.EMAILS) <= 1:
+        await _cb_edit(query, "就剩这一个邮箱了，不能删光。", _menu_keyboard())
+        return
+    email = config.EMAILS[idx]['EMAIL']
+    remaining = [e for i, e in enumerate(config.EMAILS) if i != idx]
+    try:
+        _rewrite_config_py(remaining)
+    except Exception as e:
+        await _cb_edit(query, f"写配置失败，没解绑：{e}", _menu_keyboard())
+        return
+    _REMOVED_MAILBOXES.add(email)
+    logger.info(f"主人删邮箱绑定：{email}")
+    await _cb_edit(query, f"解绑了：{email}\n它的监听 60 秒内停掉；服务器上的信还在。加回来用服务器菜单 2。", _menu_keyboard())
+
+
+async def _cb_toggle(query, action):
+    if action == "start":
+        started = start_monitor_threads()
+        if started:
+            text = "已启动运行：\n" + "\n".join(started)
+        else:
+            text = "已经在跑了，不用重复启动。"
+    else:
+        alive = stop_monitor_threads()
+        if not alive:
+            text = "已停止运行（监听都停了）。\n命令机器人还在，要再启动按 ▶️ 启动运行。"
+        else:
+            text = "有的线程还在等（最长 70 秒），稍后再按一次 ⏸️。\n还在跑：\n" + "\n".join(alive)
+    await _cb_edit(query, text, _menu_keyboard())
+
+
+async def _cb_show_logs(query):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail2tg.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception as e:
+        await _cb_edit(query, f"读不到日志文件：{e}", _menu_keyboard())
+        return
+    tail = "".join(lines[-25:])
+    tail = _redact_log_text(tail)
+    if len(tail) > 3500:
+        tail = tail[-3500:]
+    text = "📋 运行日志（最后 25 行）：\n" + (tail or "（日志还是空的）")
+    await _cb_edit(query, text, _menu_keyboard())
+
+
+async def _cb_show_bind(query):
+    text = ("➕ 绑定邮箱\n"
+            "绑定要在服务器上完成：要输邮箱密码/授权码，密码不能发到聊天里。\n"
+            "去 s13 上跑 tge，选 2，按提示走就行（选邮箱类型 → 填地址 → 填密码/授权码）。\n"
+            "配好后在菜单里按 ▶️ 启动运行，新邮箱就开始推送了。")
+    await _cb_edit(query, text, _menu_keyboard())
+
+
+async def on_callback(update, context):
+    q = await _cb_check_owner(update)
+    if q is None:
+        return
+    await _cb_answer(q)
+    data = q.data or ""
+    parts = data.split(":")
+    kind = parts[0]
+    try:
+        if data == "menu":
+            await _cb_show_menu(q)
+        elif data == "menu:ls":
+            await _cb_show_mailboxes(q)
+        elif data == "menu:rm":
+            await _cb_show_unbind(q)
+        elif data == "menu:bind":
+            await _cb_show_bind(q)
+        elif data == "menu:start":
+            await _cb_toggle(q, "start")
+        elif data == "menu:stop":
+            await _cb_toggle(q, "stop")
+        elif data == "menu:logs":
+            await _cb_show_logs(q)
+        elif kind == "mb" and len(parts) == 2:
+            await _cb_show_folders(q, int(parts[1]))
+        elif kind == "fld" and len(parts) == 3:
+            await _cb_show_folder(q, int(parts[1]), int(parts[2]))
+        elif kind == "view" and len(parts) == 4:
+            await _cb_show_mail(q, int(parts[1]), int(parts[2]), int(parts[3]))
+        elif kind == "del" and len(parts) == 4:
+            await _cb_del_confirm(q, int(parts[1]), int(parts[2]), int(parts[3]))
+        elif kind == "delok" and len(parts) == 4:
+            await _cb_del_execute(q, int(parts[1]), int(parts[2]), int(parts[3]))
+        elif kind == "rm" and len(parts) == 2:
+            await _cb_unbind_confirm(q, int(parts[1]))
+        elif kind == "rmok" and len(parts) == 2:
+            await _cb_unbind_execute(q, int(parts[1]))
+        else:
+            await _cb_show_menu(q)
+    except Exception as e:
+        logger.error(f"菜单回调出错 {data}: {e}")
+        await _cb_edit(q, f"出错了：{e}", _menu_keyboard())
+
+
+async def cmd_read(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text("用法：/read 邮箱号 文件夹号 序号，例如 /read 3 1 7")
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    try:
+        seq = int(args[2])
+    except Exception:
+        await update.message.reply_text("序号要是数字。")
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, args[1])
+        if err:
+            await update.message.reply_text(err)
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await update.message.reply_text(f"序号不对，这个文件夹现在共 {total} 封。")
+            return
+        got = _cmd_fetch_body(server, seq)
+        if got is None:
+            await update.message.reply_text("这封信取不出来。")
+            return
+        subject, sender, date, body = got
+        await update.message.reply_text(f"主题：{subject}\n发件人：{sender}\n日期：{date}\n\n{body[:2500]}")
+    except Exception as e:
+        await update.message.reply_text(f"看信失败：{e}")
+    finally:
+        _cmd_close(server)
+
+
+'''
+    anchor = "def run_command_bot():"
+    if anchor not in src:
+        print("补丁停：找不到 run_command_bot，一处都没改。")
+        sys.exit(1)
+    src = src.replace(anchor, menu + anchor, 1)
+
+# /start 改成打开菜单；新命令 /menu、/read；按钮回调接进来；顺手把命令列表写进 Telegram 的 ☰ 菜单。
+if "def _menu_keyboard" in src and "async def cmd_start" in src:
+    start = src.find("async def cmd_start")
+    end = src.find("async def cmd_ls", start)
+    if start < 0 or end < 0:
+        print("补丁停：找不到 cmd_start/cmd_ls 边界，一处都没改。")
+        sys.exit(1)
+    new_start = '''async def cmd_start(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    await update.message.reply_text(
+        "📮 Mail2Telegram 菜单\\n"
+        "点下面的按钮操作，也可以用命令：\\n"
+        "/ls 看邮箱列表；/show 1 1 5 看信；/del 删信；/rmmail 解绑邮箱；/read 3 1 7 看全文",
+        reply_markup=_menu_keyboard())
+
+
+'''
+    src = src[:start] + new_start + src[end:]
+
+if 'CallbackQueryHandler(on_callback)' not in src:
+    old_reg = '            app.add_handler(CommandHandler("rmmailok", cmd_rmmailok))'
+    if old_reg not in src:
+        print("补丁停：找不到 rmmailok 注册行，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_reg, old_reg + '\n            app.add_handler(CallbackQueryHandler(on_callback))\n            app.add_handler(CommandHandler("menu", cmd_start))\n            app.add_handler(CommandHandler("read", cmd_read))', 1)
+
+if "set_my_commands" not in src:
+    old_log = '            logger.info("Telegram 命令机器人启动了（/help 看命令）。")'
+    if old_log not in src:
+        print("补丁停：找不到命令机器人启动日志行，一处都没改。")
+        sys.exit(1)
+    new_log = '''            try:
+                from telegram import BotCommand
+                asyncio.run(app.bot.set_my_commands([
+                    BotCommand("menu", "打开菜单"),
+                    BotCommand("ls", "邮箱列表"),
+                    BotCommand("show", "看最新邮件"),
+                    BotCommand("read", "看一封信的全文"),
+                    BotCommand("del", "删一封信"),
+                    BotCommand("rmmail", "解绑邮箱"),
+                    BotCommand("start", "打开菜单"),
+                    BotCommand("help", "打开菜单"),
+                ]))
+            except Exception as e:
+                logger.info(f"设置命令菜单失败，不影响使用：{e}")
+''' + old_log
+    src = src.replace(old_log, new_log, 1)
+
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v2（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
