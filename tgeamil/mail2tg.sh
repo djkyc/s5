@@ -602,7 +602,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v2" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -677,7 +677,7 @@ def _selected_count(server, folder):
 # 4) 兼容：把 IDLE+SEARCH 的监听改成轮询。
 #    2925 不支持 SEARCH，新浪会断 IDLE，轮询只用 SELECT 取数 + FETCH 取信，
 #    每 60 秒查一次，连接断了就重连。
-if "轮询查新邮件" not in src:
+if "轮询查新邮件 v2" not in src:
     start = src.find("def idle_mail_listener")
     end = src.find("\ndef main():", start)
     if start < 0 or end < 0:
@@ -685,14 +685,19 @@ if "轮询查新邮件" not in src:
         sys.exit(1)
     listener = '''def idle_mail_listener(email_config, folder):
     # 兼容版：轮询查新邮件，不用 IDLE、不用 SEARCH。
-    # 2925 的 IMAP 不认 SEARCH，新浪会把 IDLE 连接断开，
-    # 所以每 60 秒 SELECT 一次取邮件数，多了就 FETCH 新信；连接断了就重连。
+    # 轮询查新邮件 v2：每轮新建连接。
+    # 2925 的 IMAP 不认 SEARCH；新浪会在 60 秒空闲后把连接断开，
+    # v1 是“一个连接复用、睡 60 秒再 SELECT”，每轮都会断、连错 5 次
+    # 就报重试上限（s13 上 15:29 新浪那条就是这么来的）。
+    # v2 每轮新建连接：登录、LIST、SELECT 取数、有新信就 FETCH，
+    # 用完马上退出登录；断一次只算一次重试，不会再累积到上限。
     config = load_config()
     RETRY_LIMIT = config.RETRY_LIMIT
     RETRY_DELAY = config.RETRY_DELAY
     RETRY_PAUSE = config.RETRY_PAUSE
     POLL_INTERVAL = getattr(config, "POLL_INTERVAL", 60)
     retry_count = 0
+    last_count = None
     email_provider = 'gmail' if 'gmail.com' in email_config['EMAIL'] else 'other'
 
     while True:
@@ -704,8 +709,10 @@ if "轮询查新邮件" not in src:
 
             _, folders = server.list()
             actual_folder = get_folder_name(folders, folder, email_provider) or folder
-            last_count = _selected_count(server, actual_folder)
-            logger.info(f"成功选择文件夹: {actual_folder}，当前 {last_count} 封")
+            count = _selected_count(server, actual_folder)
+            if last_count is None:
+                last_count = count
+                logger.info(f"成功选择文件夹: {actual_folder}，当前 {last_count} 封")
 
             if email_config['EMAIL'] not in LOGIN_SUCCESS:
                 language = os.environ.get('LANGUAGE', 'Chinese')
@@ -716,19 +723,16 @@ if "轮询查新邮件" not in src:
                 LOGIN_SUCCESS.append(email_config['EMAIL'])
                 asyncio.run(send_telegram_message(message))
 
-            while True:
-                time.sleep(POLL_INTERVAL)
-                count = _selected_count(server, actual_folder)
-                retry_count = 0
-                if count > last_count:
-                    for num in range(last_count + 1, count + 1):
-                        try:
-                            fetch_email(server, str(num), email_config, actual_folder)
-                        except Exception as e:
-                            logger.error(f"取第 {num} 封信失败（跳过这封）: {e}")
-                    last_count = count
-                elif count < last_count:
-                    last_count = count
+            if count > last_count:
+                for num in range(last_count + 1, count + 1):
+                    try:
+                        fetch_email(server, str(num), email_config, actual_folder)
+                    except Exception as e:
+                        logger.error(f"取第 {num} 封信失败（跳过这封）: {e}")
+                last_count = count
+            elif count < last_count:
+                last_count = count
+            retry_count = 0
         except Exception as e:
             logger.error(f"{email_config['EMAIL']} 的 {folder} 文件夹轮询出错: {e}")
             retry_count += 1
@@ -747,6 +751,8 @@ if "轮询查新邮件" not in src:
             retry_count = 0
         elif retry_count:
             time.sleep(RETRY_DELAY)
+        else:
+            time.sleep(POLL_INTERVAL)
 
 '''
     src = src[:start] + listener + src[end:]
@@ -1048,7 +1054,7 @@ def run_command_bot():
             sys.exit(1)
         src = src.replace(anchor, "    bot_thread = threading.Thread(target=run_command_bot, daemon=True)\n    bot_thread.start()\n" + anchor, 1)
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询（SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v2（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
