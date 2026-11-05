@@ -634,7 +634,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -1803,8 +1803,51 @@ if "stop_signals=None" not in src:
         "                pass\n"
         "            app.run_polling(stop_signals=None)", 1)
 
+
+# 10) 命令机器人单 loop：set_my_commands 和 run_polling 必须走同一个 event loop。
+#    之前 set_my_commands 用 asyncio.run（单独一个 loop，用完就关），
+#    run_polling 又新建一个 loop，httpx 客户端还绑在已关掉的 loop 上，
+#    一收消息就报 Event loop is closed，30 秒重试一次，永远收不到。
+#    改成每次尝试开头就建一个 loop，set_my_commands 和 run_polling 都走它。
+if "loop.run_until_complete(app.bot.set_my_commands" not in src:
+    old_top = "            config = load_config()\n            app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()"
+    if old_top not in src:
+        print("补丁停：找不到 run_command_bot 开头，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_top, "            # 整个命令机器人跑在一个线程里，只用一个 event loop：\n"
+        "            # run_polling 要在有 loop 的线程里跑，信号处理要关掉，\n"
+        "            # 而且 set_my_commands 和 run_polling 必须走同一个 loop，\n"
+        "            # 不然 httpx 客户端会绑到已经关掉的 loop 上，报 Event loop is closed。\n"
+        "            loop = asyncio.new_event_loop()\n"
+        "            asyncio.set_event_loop(loop)\n" + old_top, 1)
+    old_smc = "                asyncio.run(app.bot.set_my_commands(["
+    if old_smc not in src:
+        print("补丁停：找不到 set_my_commands 调用，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_smc, "                loop.run_until_complete(app.bot.set_my_commands([", 1)
+    step9_block = ("            # run_polling 要在有 event loop 的线程里跑：命令机器人跑在线程里，\n"
+        "            # 没有主线程的 loop，不先建一个会报 There is no current event loop；\n"
+        "            # 信号处理也要关掉，不然 add_signal_handler 在非主线程里也会报错。\n"
+        "            try:\n"
+        "                asyncio.set_event_loop(asyncio.new_event_loop())\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            app.run_polling(stop_signals=None)")
+    if step9_block in src:
+        src = src.replace(step9_block, "            app.run_polling(stop_signals=None)", 1)
+    elif "            app.run_polling()" in src:
+        src = src.replace("            app.run_polling()", "            app.run_polling(stop_signals=None)", 1)
+    else:
+        print("补丁停：找不到 app.run_polling()，一处都没改。")
+        sys.exit(1)
+    old_err = '        except Exception as e:\n            logger.error(f"命令机器人出错，30 秒后重试：{e}")\n            time.sleep(30)'
+    if old_err not in src:
+        print("补丁停：找不到命令机器人重试块，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_err, '        except Exception as e:\n            logger.error(f"命令机器人出错，30 秒后重试：{e}")\n            try:\n                asyncio.set_event_loop(None)\n            except Exception:\n                pass\n            time.sleep(30)', 1)
+
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 修命令机器人线程轮询")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
