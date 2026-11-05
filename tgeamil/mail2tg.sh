@@ -19,7 +19,7 @@
 # 只读说明：本脚本只配 IMAP，不配 SMTP，不改 Mail2Telegram 的发信逻辑。
 # 各家 IMAP 按官网最新设置：Gmail imap.gmail.com:993、QQ imap.qq.com:993、
 # 163 imap.163.com:993、新浪按后缀 imap.sina.com / imap.sina.cn / imap.vip.sina.com /
-# imap.vip.sina.cn:993、cock.li mail.cock.li:993、2925 imap.2925.com:993（备选 imap.2925mail.com）。
+# imap.vip.sina.cn:993、cock.li mail.cock.li:993、2925 imap.2925.com:993（备选 imap.2925mail.com）、v.cd smtp.mail.v.cd:993。
 # Outlook / Hotmail 只走 OAuth：个人账号自 2024-09-16 起密码 IMAP 已停用，
 # 只认 OAuth2（outlook.office365.com:993 SSL/TLS，XOAUTH2）。
 # 本脚本自带 OAuth 桥接：生成 oauth_helper.py（令牌刷新 + XOAUTH2 登录）
@@ -642,7 +642,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -901,7 +901,7 @@ async def cmd_start(update, context):
     await update.message.reply_text(
         "能用的命令：\n"
         "/ls 看邮箱列表；/ls 1 看 1 号邮箱的文件夹\n"
-        "/show 1 1 5 看 1 号邮箱 1 号文件夹最新 5 封\n"
+        "/show 1 1 8 看 1 号邮箱 1 号文件夹最新 8 封\n"
         "/del 1 1 7 删 1 号邮箱 1 号文件夹第 7 封（要再发 /delok 确认）\n"
         "/delok 1 1 7 确认删除")
 
@@ -928,7 +928,7 @@ async def cmd_ls(update, context):
         lines = [f"{email_config['EMAIL']} 的文件夹："]
         for i, name in enumerate(names, 1):
             lines.append(f"{i}. {name}")
-        lines.append("看信：/show 邮箱号 文件夹号 条数，例如 /show 1 1 5")
+        lines.append("看信：/show 邮箱号 文件夹号 条数，例如 /show 1 1 8")
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         await update.message.reply_text(f"列文件夹失败：{e}")
@@ -941,16 +941,16 @@ async def cmd_show(update, context):
         return
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text("用法：/show 邮箱号 文件夹号 [条数]，例如 /show 1 1 5")
+        await update.message.reply_text("用法：/show 邮箱号 文件夹号 [条数]，例如 /show 1 1 8")
         return
     email_config, err = _cmd_mailbox(args[0])
     if err:
         await update.message.reply_text(err)
         return
     try:
-        count_n = int(args[2]) if len(args) > 2 else 5
+        count_n = int(args[2]) if len(args) > 2 else 8
     except Exception:
-        count_n = 5
+        count_n = 8
     count_n = max(1, min(count_n, 10))
     server = None
     try:
@@ -1405,13 +1405,28 @@ async def _cb_show_menu(query):
     await _cb_edit(query, _menu_text(), _menu_keyboard())
 
 
-async def _cb_show_mailboxes(query):
+async def _cb_show_mailboxes(query, page=1):
     config = load_config()
+    per_page = 8
+    total = len(config.EMAILS)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, pages))
+    start = (page - 1) * per_page
     rows = []
-    for i, e in enumerate(config.EMAILS, 1):
-        rows.append([InlineKeyboardButton(f"{i}. {e['EMAIL']}", callback_data=f"mb:{i}")])
+    for i, e in enumerate(config.EMAILS[start:start + per_page], start + 1):
+        rows.append([InlineKeyboardButton(f"{i:>2}. {e['EMAIL']}", callback_data=f"mb:{i}")])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"menu:ls:{page - 1}"))
+    if page < pages:
+        nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"menu:ls:{page + 1}"))
+    if nav:
+        rows.append(nav)
     rows.append([InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")])
-    await _cb_edit(query, "📮 邮箱列表（点一个进文件夹）：", InlineKeyboardMarkup(rows))
+    title = "📮 邮箱列表（点一个进文件夹）："
+    if pages > 1:
+        title = f"📮 邮箱列表（第 {page}/{pages} 页，点一个进文件夹）："
+    await _cb_edit(query, title, InlineKeyboardMarkup(rows))
 
 
 async def _cb_show_folders(query, midx):
@@ -1427,7 +1442,7 @@ async def _cb_show_folders(query, midx):
         for i, name in enumerate(names, 1):
             rows.append([InlineKeyboardButton(f"{name}", callback_data=f"fld:{midx}:{i}")])
         rows.append([InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")])
-        await _cb_edit(query, f"{email_config['EMAIL']} 的文件夹（点一个看最新 5 封）：", InlineKeyboardMarkup(rows))
+        await _cb_edit(query, f"{email_config['EMAIL']} 的文件夹（点一个看最新 8 封）：", InlineKeyboardMarkup(rows))
     except Exception as e:
         await _cb_edit(query, f"列文件夹失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
     finally:
@@ -1451,14 +1466,15 @@ async def _cb_show_folder(query, midx, fidx):
             await _cb_edit(query, f"{folder} 里没有信。",
                            InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")]]))
             return
-        start = max(1, total - 4)
+        start = max(1, total - 7)
         text = f"{email_config['EMAIL']} / {folder}（共 {total} 封，最新 {total - start + 1} 封，点一封查看/删除）："
         rows = []
+        w = len(str(total))
         for num in range(total, start - 1, -1):
             subject, sender, date = _cmd_fetch_header(server, num)
             if subject is None:
                 subject = "(取不出来)"
-            rows.append([InlineKeyboardButton(f"{num}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}")])
+            rows.append([InlineKeyboardButton(f"{num:>{w}}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}")])
         rows.append([InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")])
         await _cb_edit(query, text, InlineKeyboardMarkup(rows))
     except Exception as e:
@@ -1662,8 +1678,14 @@ async def on_callback(update, context):
     try:
         if data == "menu":
             await _cb_show_menu(q)
-        elif data == "menu:ls":
-            await _cb_show_mailboxes(q)
+        elif data == "menu:ls" or data.startswith("menu:ls:"):
+            _pg = 1
+            if data.startswith("menu:ls:"):
+                try:
+                    _pg = int(data.split(":")[2])
+                except Exception:
+                    _pg = 1
+            await _cb_show_mailboxes(q, _pg)
         elif data == "menu:rm":
             await _cb_show_unbind(q)
         elif data == "menu:bind":
@@ -1754,7 +1776,7 @@ if "def _menu_keyboard" in src and "async def cmd_start" in src:
     await update.message.reply_text(
         "📮 Mail2Telegram 菜单\\n"
         "点下面的按钮操作，也可以用命令：\\n"
-        "/ls 看邮箱列表；/show 1 1 5 看信；/del 删信；/rmmail 解绑邮箱；/read 3 1 7 看全文",
+        "/ls 看邮箱列表；/show 1 1 8 看信；/del 删信；/rmmail 解绑邮箱；/read 3 1 7 看全文",
         reply_markup=_menu_keyboard())
 
 
@@ -1984,19 +2006,20 @@ if "def _cb_show_folder(query, midx, fidx, page=1):" not in src:
                            InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")]]))
             return
         page = max(1, int(page))
-        pages = (total - 1) // 5 + 1
+        pages = (total - 1) // 8 + 1
         if page > pages:
             page = pages
-        end = total - (page - 1) * 5
-        start = max(1, end - 4)
+        end = total - (page - 1) * 8
+        start = max(1, end - 7)
         disp = _folder_display_name(folder)
         text = f"{email_config['EMAIL']} / {disp}（共 {total} 封，第 {page}/{pages} 页，点一封查看/删除）："
         rows = []
+        w = len(str(total))
         for num in range(end, start - 1, -1):
             subject, sender, date = _cmd_fetch_header(server, num)
             if subject is None:
                 subject = "(取不出来)"
-            rows.append([InlineKeyboardButton(f"{num}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}:{page}")])
+            rows.append([InlineKeyboardButton(f"{num:>{w}}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}:{page}")])
         nav = []
         if page > 1:
             nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"fld:{midx}:{fidx}:{page - 1}"))
@@ -2145,6 +2168,7 @@ if "_BIND_PROVIDERS" not in src:
     ("sina", "新浪"),
     ("cockli", "cock.li"),
     ("2925", "2925"),
+    ("vcd", "v.cd"),
     ("outlook", "Outlook/Hotmail"),
     ("custom", "自建/小众邮箱"),
 ]
@@ -2166,6 +2190,8 @@ def _bind_imap_for(provider, email):
         return "mail.cock.li", 993, False
     if provider == "2925":
         return "imap.2925.com", 993, False
+    if provider == "vcd":
+        return "smtp.mail.v.cd", 993, False
     if provider == "outlook":
         return "outlook.office365.com", 993, True
     return "", 993, False
@@ -2224,7 +2250,7 @@ async def _bind_finish(update, st):
     os.replace(tmp, path)
     _BIND_STATE.pop(str(update.effective_chat.id), None)
     if oauth:
-        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，按提示完成设备码授权（在浏览器里开 microsoft.com/devicelogin 输码）。\n授权完在菜单里按 ▶️ 启动运行。")
+        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://microsoft.com/devicelogin 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")
     else:
         tip = (f"已记下：{email}（{_bind_provider_name(provider)}）。\n去 s13 上跑 tge，选 11，只输密码/授权码就完成了，不用再填地址。\n配好后在菜单里按 ▶️ 启动运行。")
     await update.message.reply_text(tip, reply_markup=_menu_keyboard())
@@ -2255,7 +2281,13 @@ async def on_text(update, context):
             await update.message.reply_text("自建邮箱：请发 IMAP 服务器地址（例如 imap.example.com）。")
         elif st["provider"] == "outlook":
             st["step"] = "client_id"
-            await update.message.reply_text("Outlook：请发 Entra 应用的 client ID（在 entra.microsoft.com 注册后能看到的那串 ID，不是密码）。\n还没有注册的话，先去 entra.microsoft.com 注册一个应用再来。")
+            await update.message.reply_text(
+                "Outlook：请发应用的 client ID（不是密码）。\n"
+                "可以直接用 Thunderbird 的公开 client ID，点下面这串复制：\n"
+                "<code>9e5f94bc-e8a4-4e73-b8be-63364c29d753</code>\n"
+                "授权页会显示 Thunderbird，正常。\n"
+                "也可以去 https://entra.microsoft.com 注册自己的应用，把你自己的 client ID 发过来。",
+                parse_mode="HTML")
         else:
             await _bind_finish(update, st)
         return
@@ -2324,7 +2356,7 @@ if "async def cmd_help" not in src:
         "点 /menu 打开菜单（推荐），也可以直接发命令：\n"
         "/menu 打开菜单\n"
         "/ls 看邮箱列表\n"
-        "/show 3 1 5 看 3 号邮箱 1 号文件夹最新 5 封\n"
+        "/show 3 1 8 看 3 号邮箱 1 号文件夹最新 8 封\n"
         "/read 3 1 7 看 3 号邮箱 1 号文件夹第 7 封全文\n"
         "/del 3 1 7 删一封信（要再发 /delok 确认）\n"
         "/rmmail 3 解绑 3 号邮箱（要再发 /rmmailok 确认）\n"
@@ -2358,8 +2390,90 @@ if 'BotCommand("ls", "邮箱列表")' in src:
                     BotCommand("help", "使用方法"),
                 ]))'''
     src = src[:a] + new_cmds + src[b + 3:]
+# 12) 菜单 v3：邮箱列表/邮件列表改成 8 封一页、序号对齐；v.cd 进机器人向导；Outlook 提示可点复制。
+#     s13 的 main.py 早已打过菜单 v2，patch_main_py 开头的“已打过跳过”会直接返回，
+#     上面 11/11b/11d 那些带 if-not-in-src 保护的步骤对它都不再生效，所以这里直接改
+#     已经打过补丁的 main.py。下面全是“有旧串才换、没有就跳过”，新装的 main.py 不会误伤。
+if "菜单 v3" not in src:
+    # 12a) 邮箱列表：换成 8 封一页 + 序号右对齐 + 上一页/下一页（旧版没有 page 参数）
+    if "menu:ls:{page - 1}" not in src and "async def _cb_show_mailboxes(" in src and "async def _cb_show_folders(" in src:
+        src = _replace_fn(src, "async def _cb_show_mailboxes(", "async def _cb_show_folders(", r'''async def _cb_show_mailboxes(query, page=1):
+    config = load_config()
+    per_page = 8
+    total = len(config.EMAILS)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, pages))
+    start = (page - 1) * per_page
+    rows = []
+    for i, e in enumerate(config.EMAILS[start:start + per_page], start + 1):
+        rows.append([InlineKeyboardButton(f"{i:>2}. {e['EMAIL']}", callback_data=f"mb:{i}")])
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"menu:ls:{page - 1}"))
+    if page < pages:
+        nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"menu:ls:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")])
+    title = "📮 邮箱列表（点一个进文件夹）："
+    if pages > 1:
+        title = f"📮 邮箱列表（第 {page}/{pages} 页，点一个进文件夹）："
+    await _cb_edit(query, title, InlineKeyboardMarkup(rows))
+
+
+''')
+        old_ls_route = '''        elif data == "menu:ls":
+            await _cb_show_mailboxes(q)'''
+        if old_ls_route in src:
+            src = src.replace(old_ls_route, '''        elif data == "menu:ls" or data.startswith("menu:ls:"):
+            _pg = 1
+            if data.startswith("menu:ls:"):
+                try:
+                    _pg = int(data.split(":")[2])
+                except Exception:
+                    _pg = 1
+            await _cb_show_mailboxes(q, _pg)''', 1)
+    # 12b) 邮件列表：已打过 11b 的 main.py 里还是 5 封一页，改成 8 封一页，序号按总封数对齐
+    if "pages = (total - 1) // 5 + 1" in src:
+        src = src.replace("pages = (total - 1) // 5 + 1", "pages = (total - 1) // 8 + 1", 1)
+        src = src.replace("end = total - (page - 1) * 5", "end = total - (page - 1) * 8", 1)
+        src = src.replace("start = max(1, end - 4)", "start = max(1, end - 7)", 1)
+    if 'rows.append([InlineKeyboardButton(f"{num}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}:{page}")])' in src:
+        src = src.replace("        start = max(1, end - 7)\n", "        start = max(1, end - 7)\n        w = len(str(total))\n", 1)
+        src = src.replace('f"{num}. {subject[:25]}"', 'f"{num:>{w}}. {subject[:25]}"', 1)
+    # 12c) 其余“5 封”文案统一改成 8 封（文件夹页、/show 默认条数、帮助示例）
+    src = src.replace("点一个看最新 5 封", "点一个看最新 8 封")
+    src = src.replace("/show 1 1 5", "/show 1 1 8")
+    src = src.replace("/show 3 1 5", "/show 3 1 8")
+    src = src.replace("最新 5 封", "最新 8 封")
+    src = src.replace("count_n = int(args[2]) if len(args) > 2 else 5", "count_n = int(args[2]) if len(args) > 2 else 8")
+    src = src.replace("        count_n = 5", "        count_n = 8")
+    # 12d) v.cd 进机器人绑定向导（11d 当年没它，s13 的向导里选不到 v.cd）
+    if '("vcd", "v.cd")' not in src:
+        if '    ("2925", "2925"),\n    ("outlook", "Outlook/Hotmail"),' in src:
+            src = src.replace('    ("2925", "2925"),\n    ("outlook", "Outlook/Hotmail"),', '    ("2925", "2925"),\n    ("vcd", "v.cd"),\n    ("outlook", "Outlook/Hotmail"),', 1)
+        if '    if provider == "2925":\n        return "imap.2925.com", 993, False\n' in src:
+            src = src.replace('    if provider == "2925":\n        return "imap.2925.com", 993, False\n', '    if provider == "2925":\n        return "imap.2925.com", 993, False\n    if provider == "vcd":\n        return "smtp.mail.v.cd", 993, False\n', 1)
+    # 12e) Outlook 提示改成可点复制的 Thunderbird client ID + 可点开的设备码网址（s13 的还是 2950 版旧提示）
+    _old_outlook_prompt = r'''            await update.message.reply_text("Outlook：请发 Entra 应用的 client ID（在 entra.microsoft.com 注册后能看到的那串 ID，不是密码）。\n还没有注册的话，先去 entra.microsoft.com 注册一个应用再来。")'''
+    if _old_outlook_prompt in src:
+        src = src.replace(_old_outlook_prompt, r'''            await update.message.reply_text(
+                "Outlook：请发应用的 client ID（不是密码）。\n"
+                "可以直接用 Thunderbird 的公开 client ID，点下面这串复制：\n"
+                "<code>9e5f94bc-e8a4-4e73-b8be-63364c29d753</code>\n"
+                "授权页会显示 Thunderbird，正常。\n"
+                "也可以去 https://entra.microsoft.com 注册自己的应用，把你自己的 client ID 发过来。",
+                parse_mode="HTML")''', 1)
+    _old_outlook_tip = r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，按提示完成设备码授权（在浏览器里开 microsoft.com/devicelogin 输码）。\n授权完在菜单里按 ▶️ 启动运行。")'''
+    if _old_outlook_tip in src:
+        src = src.replace(_old_outlook_tip, r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://microsoft.com/devicelogin 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")''', 1)
+    # 打上 v3 标记，下次 patch_main_py 开头就能跳过
+    if "# 菜单 v1：机器人内菜单" in src:
+        src = src.replace("# 菜单 v1：机器人内菜单", "# 菜单 v3：邮箱列表/邮件列表 8 封一页，v.cd 进机器人向导，Outlook 提示可点复制\n# 菜单 v1：机器人内菜单", 1)
+    else:
+        src += "\n# 菜单 v3：邮箱列表/邮件列表 8 封一页，v.cd 进机器人向导，Outlook 提示可点复制\n"
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -2556,6 +2670,7 @@ echo " 5) cock.li"
 echo " 6) 2925.com"
 echo " 7) Outlook / Hotmail（OAuth，不走密码 IMAP）"
 echo " 8) 自建 / 自定义 IMAP（按标准示例填）"
+echo " 9) v.cd"
 echo " 0) 不加了，结束添加"
 local choice=""
 read -r -p "输入序号: " choice || true
@@ -2605,6 +2720,7 @@ case "$P_PORT" in
 ''|*[!0-9]*) echo "端口不是数字，跳过。"; return 1;;
 esac
 ;;
+9) P_HOST="smtp.mail.v.cd"; P_PORT="993"; P_HINT="v.cd 账号密码。IMAP 服务器 smtp.mail.v.cd:993 SSL（POP3 同主机 995，SMTP 同主机 465，机器人只用 IMAP）";;
 *) echo "没选对，跳过这一个。"; return 1;;
 esac
 return 0
