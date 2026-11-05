@@ -2448,7 +2448,8 @@ complete_pending_bind() {
   if [ ! -d "$DIR" ]; then echo "还没有 $DIR，先选 1 一键部署。"; return 1; fi
   if [ ! -f "$DIR/pending_bind.json" ]; then echo "没有待绑定的邮箱。先在机器人里点 ➕ 绑定邮箱，按提示填好地址再来。"; return 1; fi
   local py
-  py="$(mktemp "$DIR/.complete_bind.XXXXXX.py")" || return 1
+  rm -f "$DIR/.complete_bind.XXXXXX.py"  # 清掉旧模板留下的字面量文件（FreeBSD mktemp 只认结尾的 XXXXXX）
+  py="$(mktemp "$DIR/.complete_bind.XXXXXX")" || return 1
   cat > "$py" <<'PYEOF'
 import json, os, sys, subprocess, shutil, time, py_compile
 D = sys.argv[1]
