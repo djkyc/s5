@@ -1,7 +1,6 @@
-tg接收email :gmail outlook qq 163 sina v.cd 自定义邮箱 可收取，删除邮件。
+## tg接收email :gmail outlook qq 163 sina v.cd 自定义邮箱 可收取，删除邮件。
 
-```
-bash
+```bash
 curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh -o ~/mail2tg.sh && chmod +x ~/mail2tg.sh && ./mail2tg.sh
 ```
 ---
