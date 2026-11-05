@@ -247,10 +247,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-SCOPE = (
-    "https://outlook.office.com/IMAP.AccessAsUser.All "
-    "offline_access openid profile email"
-)
+SCOPE = "https://outlook.office.com/IMAP.AccessAsUser.All offline_access"
 DEFAULT_TENANT = "consumers"
 TOKEN_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "oauth_tokens.json"
