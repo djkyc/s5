@@ -29,6 +29,9 @@
 # cock.li 的 LIST 分隔符是 "." 不是 "/"，所以补丁把监听改成每 60 秒轮询
 # （SELECT 取邮件数 + FETCH 取新信，不调 SEARCH/IDLE），并按 LIST 行里
 # 最后一个带引号的名字解析文件夹。
+# Telegram 命令：机器人除了推送，还能回命令。只认 TELEGRAM_CHAT_ID 一个人：
+# /ls 看邮箱和文件夹，/show 邮箱号 文件夹号 条数 看最近的信，
+# /del 邮箱号 文件夹号 序号 删信（要再发 /delok 确认，5 分钟内有效）。
 # 令牌存 ~/mail2tg/oauth_tokens.json（600），access token 约 1 小时过期时
 # 自动用 refresh_token 刷新；refresh token 被吊销/过期就用菜单 10 重新授权。
 # 授权前要先在 Microsoft Entra 自己注册一个应用（公开客户端，
@@ -594,9 +597,9 @@ return 0
 }
 
 patch_main_py() {
-echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）"
+echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -744,8 +747,305 @@ if "轮询查新邮件" not in src:
 
 '''
     src = src[:start] + listener + src[end:]
+
+# 5) Telegram 命令：查看其它文件夹 / 删除邮件。
+#    上游机器人只会推送，没有任何命令。这里加一个命令机器人，和监听线程一起跑。
+#    只认 TELEGRAM_CHAT_ID 一个人；删信要先 /del 再 /delok 两步确认，5 分钟内有效。
+if "CommandHandler" not in src:
+    old_imp = "from telegram.ext import ApplicationBuilder"
+    if old_imp not in src:
+        print("补丁停：找不到 telegram 导入行，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_imp, "from telegram.ext import ApplicationBuilder, CommandHandler", 1)
+
+if "def run_command_bot" not in src:
+    commands = r'''# ---- Telegram 命令：查看其它文件夹 / 删除邮件，只认主人 TELEGRAM_CHAT_ID ----
+_PENDING_DELS = {}
+
+
+def _cmd_mailbox(arg):
+    config = load_config()
+    try:
+        idx = int(arg) - 1
+    except Exception:
+        return None, "邮箱号要是数字，用 /ls 看编号。"
+    if idx < 0 or idx >= len(config.EMAILS):
+        return None, "没有这个编号的邮箱，用 /ls 看编号。"
+    return config.EMAILS[idx], None
+
+
+def _cmd_open(email_config):
+    # 每次命令新开一个 IMAP 连接，用完就关，不动监听线程的连接
+    server = imaplib2.IMAP4_SSL(email_config['IMAP_SERVER'], email_config['IMAP_SERVER_PORT'])
+    oauth_helper.imap_login(server, email_config)
+    return server
+
+
+def _cmd_folders(server):
+    status, folders = server.list()
+    if status != "OK":
+        raise Exception("取文件夹列表失败")
+    names = []
+    for f in folders or []:
+        name = _parse_list_folder_name(f)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _cmd_resolve_folder(server, arg):
+    # 文件夹可以传编号（/ls 里看到的序号）或名字
+    names = _cmd_folders(server)
+    try:
+        idx = int(arg) - 1
+        if 0 <= idx < len(names):
+            return names[idx], None
+    except Exception:
+        pass
+    if arg in names:
+        return arg, None
+    return None, "没有这个文件夹，用 /ls 邮箱号 看编号。"
+
+
+async def _cmd_check_owner(update):
+    if not update.message:
+        return False
+    config = load_config()
+    try:
+        if str(update.effective_chat.id) == str(config.TELEGRAM_CHAT_ID):
+            return True
+    except Exception:
+        pass
+    try:
+        await update.message.reply_text("不是主人，不理你。")
+    except Exception:
+        pass
+    return False
+
+
+def _cmd_fetch_header(server, seq):
+    # 只取信头，不取正文
+    typ, data = server.fetch(str(seq), "(BODY[HEADER.FIELDS (SUBJECT DATE FROM)])")
+    if typ != "OK" or not data or not isinstance(data[0], tuple):
+        return None, None, None
+    msg = email.message_from_bytes(data[0][1])
+    subject = decode_header_string(msg.get("Subject") or "(无主题)")
+    sender = decode_header_string(msg.get("From") or "")
+    date = msg.get("Date") or ""
+    return subject, sender, date
+
+
+def _cmd_close(server):
+    if server:
+        try:
+            server.logout()
+        except Exception:
+            pass
+
+
+async def cmd_start(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    await update.message.reply_text(
+        "能用的命令：\n"
+        "/ls 看邮箱列表；/ls 1 看 1 号邮箱的文件夹\n"
+        "/show 1 1 5 看 1 号邮箱 1 号文件夹最新 5 封\n"
+        "/del 1 1 7 删 1 号邮箱 1 号文件夹第 7 封（要再发 /delok 确认）\n"
+        "/delok 1 1 7 确认删除")
+
+
+async def cmd_ls(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    config = load_config()
+    args = context.args
+    if not args:
+        lines = ["邮箱列表（/ls 1 看文件夹）："]
+        for i, e in enumerate(config.EMAILS, 1):
+            lines.append(f"{i}. {e['EMAIL']}")
+        await update.message.reply_text("\n".join(lines))
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        names = _cmd_folders(server)
+        lines = [f"{email_config['EMAIL']} 的文件夹："]
+        for i, name in enumerate(names, 1):
+            lines.append(f"{i}. {name}")
+        lines.append("看信：/show 邮箱号 文件夹号 条数，例如 /show 1 1 5")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"列文件夹失败：{e}")
+    finally:
+        _cmd_close(server)
+
+
+async def cmd_show(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("用法：/show 邮箱号 文件夹号 [条数]，例如 /show 1 1 5")
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    try:
+        count_n = int(args[2]) if len(args) > 2 else 5
+    except Exception:
+        count_n = 5
+    count_n = max(1, min(count_n, 10))
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, args[1])
+        if err:
+            await update.message.reply_text(err)
+            return
+        total = _selected_count(server, folder)
+        if total == 0:
+            await update.message.reply_text(f"{folder} 里没有信。")
+            return
+        start = max(1, total - count_n + 1)
+        lines = [f"{email_config['EMAIL']} / {folder}（共 {total} 封，最新 {total - start + 1} 封）："]
+        for num in range(total, start - 1, -1):
+            subject, sender, date = _cmd_fetch_header(server, num)
+            if subject is None:
+                lines.append(f"{num}. 取不出来")
+            else:
+                lines.append(f"{num}. {subject}\n   {sender} | {date}")
+        lines.append("删信：/del 邮箱号 文件夹号 序号，例如 /del 1 1 7")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"看信失败：{e}")
+    finally:
+        _cmd_close(server)
+
+
+async def cmd_del(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text("用法：/del 邮箱号 文件夹号 序号，例如 /del 1 1 7")
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    try:
+        seq = int(args[2])
+    except Exception:
+        await update.message.reply_text("序号要是数字。")
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, args[1])
+        if err:
+            await update.message.reply_text(err)
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await update.message.reply_text(f"序号不对，这个文件夹现在共 {total} 封。")
+            return
+        subject, sender, date = _cmd_fetch_header(server, seq)
+        if subject is None:
+            subject, sender = "(取不到标题)", ""
+        key = (str(update.effective_chat.id), args[0], args[1], str(seq))
+        _PENDING_DELS[key] = (time.time(), folder, subject)
+        await update.message.reply_text(
+            f"要删这封吗？\n{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}\n发件人：{sender}\n"
+            f"确认请在 5 分钟内发：/delok {args[0]} {args[1]} {seq}\n不删就不用管，5 分钟后作废。")
+    except Exception as e:
+        await update.message.reply_text(f"删信失败：{e}")
+    finally:
+        _cmd_close(server)
+
+
+async def cmd_delok(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    args = context.args
+    if len(args) < 3:
+        await update.message.reply_text("用法：/delok 邮箱号 文件夹号 序号，例如 /delok 1 1 7")
+        return
+    key = (str(update.effective_chat.id), args[0], args[1], args[2])
+    pending = _PENDING_DELS.pop(key, None)
+    if not pending:
+        await update.message.reply_text("没有等确认的删除，先发 /del 选一封。")
+        return
+    created, folder_saved, subject = pending
+    if time.time() - created > 300:
+        await update.message.reply_text("确认超时了（超过 5 分钟），没删，重新发 /del。")
+        return
+    email_config, err = _cmd_mailbox(args[0])
+    if err:
+        await update.message.reply_text(err)
+        return
+    try:
+        seq = int(args[2])
+    except Exception:
+        await update.message.reply_text("序号要是数字。")
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, args[1])
+        if err:
+            await update.message.reply_text(err)
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await update.message.reply_text(f"序号变了，现在共 {total} 封，没删。重新发 /del。")
+            return
+        server.store(str(seq), "+FLAGS", r"(\Deleted)")
+        server.expunge()
+        logger.info(f"主人删信：{email_config['EMAIL']} / {folder} 第 {seq} 封：{subject}")
+        await update.message.reply_text(f"删了：{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}")
+    except Exception as e:
+        await update.message.reply_text(f"删信失败：{e}")
+    finally:
+        _cmd_close(server)
+
+
+def run_command_bot():
+    # Telegram 命令机器人，和 IMAP 监听线程一起跑；断了 30 秒后自己重连。
+    while True:
+        try:
+            config = load_config()
+            app = ApplicationBuilder().token(config.TELEGRAM_BOT_TOKEN).build()
+            app.add_handler(CommandHandler("start", cmd_start))
+            app.add_handler(CommandHandler("help", cmd_start))
+            app.add_handler(CommandHandler("ls", cmd_ls))
+            app.add_handler(CommandHandler("show", cmd_show))
+            app.add_handler(CommandHandler("del", cmd_del))
+            app.add_handler(CommandHandler("delok", cmd_delok))
+            logger.info("Telegram 命令机器人启动了（/help 看命令）。")
+            app.run_polling()
+        except Exception as e:
+            logger.error(f"命令机器人出错，30 秒后重试：{e}")
+            time.sleep(30)
+
+
+'''
+    if "def main():" not in src:
+        print("补丁停：找不到 def main()，一处都没改。")
+        sys.exit(1)
+    src = src.replace("def main():", commands + "\ndef main():", 1)
+    anchor = "    while any(thread.is_alive() for thread in email_threads):"
+    if "bot_thread = threading.Thread(target=run_command_bot" not in src:
+        if anchor not in src:
+            print("补丁停：找不到 main() 里等监听线程的那行，一处都没改。")
+            sys.exit(1)
+        src = src.replace(anchor, "    bot_thread = threading.Thread(target=run_command_bot, daemon=True)\n    bot_thread.start()\n" + anchor, 1)
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询（SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）")
+print("补丁已打：OAuth 登录 + 兼容轮询（SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -757,12 +1057,12 @@ echo "补丁后 main.py 语法检查没过，已恢复备份，补丁没打。"
 cp "$bak" "$DIR/main.py" 2>/dev/null || true
 return 1
 fi
-if [ "$(grep -c "oauth_helper.imap_login" "$DIR/main.py")" -ne 2 ] || grep -q "server.login(email_config\['EMAIL'\], email_config\['PASSWORD'\])" "$DIR/main.py"; then
-echo "补丁后核对没过（应有 2 处新登录、0 处旧登录），已恢复备份。"
+if [ "$(grep -c "oauth_helper.imap_login" "$DIR/main.py")" -ne 3 ] || grep -q "server.login(email_config\['EMAIL'\], email_config\['PASSWORD'\])" "$DIR/main.py"; then
+echo "补丁后核对没过（应有 3 处新登录：监听、轮询、命令各 1 处，0 处旧登录），已恢复备份。"
 cp "$bak" "$DIR/main.py" 2>/dev/null || true
 return 1
 fi
-if ! grep -q "_selected_count" "$DIR/main.py" || grep -q "server\.idle(" "$DIR/main.py" || grep -q "server\.search(" "$DIR/main.py"; then
+if ! grep -q "_selected_count" "$DIR/main.py" || ! grep -q "run_command_bot" "$DIR/main.py" || grep -q "server\.idle(" "$DIR/main.py" || grep -q "server\.search(" "$DIR/main.py"; then
 echo "补丁后核对没过（轮询函数缺失，或还剩 IDLE/SEARCH），已恢复备份。"
 cp "$bak" "$DIR/main.py" 2>/dev/null || true
 return 1
@@ -1092,6 +1392,10 @@ return 0
 }
 
 foreground_test() {
+if is_running; then
+echo "已经有一个 mail2tg 在跑了（后台或另一个前台），再开一个会让同一封信推两次。"
+if ! ask_yes_no "确定还要再开一个前台测试吗？"; then echo "先停掉在跑的那个（菜单 5，或 Ctrl+C 停掉另一个前台）再测。"; return 1; fi
+fi
 if [ ! -f "$CONFIG" ]; then
 echo "还没有 $CONFIG，先选 2 走配置向导。"
 return 1
