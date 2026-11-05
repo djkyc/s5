@@ -561,7 +561,7 @@ def main(argv):
     _code = dc["user_code"]
     # OSC 8 超链接（点一下在浏览器打开）+ OSC 52（请终端把用户码写进剪贴板）；不支持的终端会忽略转义。
     # 网址用亮青粗体、用户码用亮黄粗体，显眼好找。
-    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\\x1b[1;96m%s\x1b[0m\x1b]8;;\x1b\\" % (_uri, _uri))
+    print("建议用 第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\\x1b[1;96m%s\x1b[0m\x1b]8;;\x1b\\" % (_uri, _uri))
     print("网址（点不开就手动复制）：\x1b[1;96m%s\x1b[0m" % _uri)
     try:
         sys.stdout.write("\x1b]52;c;%s\x1b\\" % base64.b64encode(_code.encode("utf-8")).decode("ascii")); sys.stdout.flush()
