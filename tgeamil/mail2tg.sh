@@ -139,7 +139,10 @@ PY="$HOME/mail2tg-venv/bin/python"
 else
 PY="python3"
 fi
-exec "$PY" main.py
+# 必须用绝对路径启动：start.sh、stop.sh、看门狗、is_running 都是按
+# mail2tg/main.py 匹配进程的，相对路径 main.py 匹配不到，会导致
+# 重复启动、停不掉、看门狗每 5 分钟又拉一个。
+exec "$PY" "$PWD/main.py"
 EOF
 cat > "$DIR/start.sh" <<'EOF'
 #!/bin/sh
@@ -1332,6 +1335,7 @@ if [ ! -f "$CONFIG" ]; then
 echo "还没有 $CONFIG，先选 2 走配置向导。"
 return 1
 fi
+write_helpers || return 1
 if [ ! -x "$DIR/start.sh" ]; then
 echo "还没有启动脚本，先选 1 走一键部署，或者先写后台脚本。"
 return 1
@@ -1406,7 +1410,7 @@ local py="python3"
 [ -x "$VENV/bin/python" ] && py="$VENV/bin/python"
 echo "前台测试开始：TG 收到“登录成功”就说明通了，再给邮箱发封测试信看推不推。"
 echo "想停就按 Ctrl+C，停了不会进后台。"
-(cd "$DIR" && LANGUAGE=Chinese TIMEZONE=Asia/Shanghai ENABLE_LOGGING=true ENABLE_EVC=false "$py" main.py)
+(cd "$DIR" && LANGUAGE=Chinese TIMEZONE=Asia/Shanghai ENABLE_LOGGING=true ENABLE_EVC=false "$py" "$DIR/main.py")
 echo "前台测试已退出。"
 return 0
 }
