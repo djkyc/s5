@@ -25,6 +25,10 @@
 # 本脚本自带 OAuth 桥接：生成 oauth_helper.py（令牌刷新 + XOAUTH2 登录）
 # 和 oauth_outlook.py（设备码授权），并给 main.py 打补丁，只把两处
 # server.login(...) 换成 oauth_helper.imap_login(...)，其他邮箱仍走密码登录。
+# 兼容补丁：上游用 IDLE + SEARCH 监听，2925 不认 SEARCH、新浪会断 IDLE、
+# cock.li 的 LIST 分隔符是 "." 不是 "/"，所以补丁把监听改成每 60 秒轮询
+# （SELECT 取邮件数 + FETCH 取新信，不调 SEARCH/IDLE），并按 LIST 行里
+# 最后一个带引号的名字解析文件夹。
 # 令牌存 ~/mail2tg/oauth_tokens.json（600），access token 约 1 小时过期时
 # 自动用 refresh_token 刷新；refresh token 被吊销/过期就用菜单 10 重新授权。
 # 授权前要先在 Microsoft Entra 自己注册一个应用（公开客户端，
@@ -590,9 +594,9 @@ return 0
 }
 
 patch_main_py() {
-echo "给 main.py 打 OAuth 补丁（只改两处登录，别的不动）"
+echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -601,19 +605,147 @@ import os, sys
 # 所以改成命令行参数传进来（s13 上就是在这里报 KeyError: 'DIR'）。
 path = os.path.join(sys.argv[1], "main.py")
 src = open(path, encoding="utf-8").read()
+
+# 1) OAuth：两处密码登录改成 oauth_helper.imap_login（已打过就跳过这步）
 old = "server.login(email_config['EMAIL'], email_config['PASSWORD'])"
 count = src.count(old)
-if count != 2:
-    print("补丁停：main.py 里找到 %d 处密码登录，预期 2 处，一处都没改。" % count)
+if count == 2:
+    src = src.replace(old, "oauth_helper.imap_login(server, email_config)")
+elif count != 0:
+    print("补丁停：main.py 里找到 %d 处密码登录，预期 2 处或 0 处，一处都没改。" % count)
     sys.exit(1)
-src = src.replace(old, "oauth_helper.imap_login(server, email_config)")
 anchor = "from tools.extract_verification_code import extract_verification_code"
-if anchor not in src:
-    print("补丁停：找不到 import 锚点，一处都没改。")
+if "import oauth_helper" not in src:
+    if anchor not in src:
+        print("补丁停：找不到 import 锚点，一处都没改。")
+        sys.exit(1)
+    src = src.replace(anchor, anchor + "\nimport oauth_helper  # Serv00 补丁：Outlook 走 XOAUTH2，其他邮箱仍走密码登录", 1)
+
+# 2) 兼容：LIST 文件夹名解析只认 "/"，cock.li 的分隔符是 "."，
+#    会把整行当文件夹名去 select。改成取 LIST 行里最后一个带引号的名字。
+old_parse = "folder_name = folder.decode().split(' \"/\" ')[-1].strip('\"')"
+if old_parse in src:
+    src = src.replace(old_parse, "folder_name = _parse_list_folder_name(folder)")
+elif "_parse_list_folder_name(folder)" not in src:
+    print("补丁停：找不到 LIST 解析行，一处都没改。")
     sys.exit(1)
-src = src.replace(anchor, anchor + "\nimport oauth_helper  # Serv00 补丁：Outlook 走 XOAUTH2，其他邮箱仍走密码登录", 1)
+
+# 3) 插入两个小工具函数，放在 def monitor_email 前面
+if "def _parse_list_folder_name" not in src:
+    helpers = '''def _parse_list_folder_name(folder):
+    # LIST 行分隔符可能是 / . :，上游只认 "/" 会把整行当文件夹名。
+    # 不管分隔符是什么，取行里最后一个带引号的名字。
+    text = folder.decode(errors="replace") if isinstance(folder, bytes) else str(folder)
+    quoted = re.findall(r'"([^"]*)"', text)
+    if quoted:
+        return quoted[-1]
+    return text.rsplit(" ", 1)[-1].strip('"')
+
+
+def _selected_count(server, folder):
+    # 只用 SELECT 取邮件数，不用 SEARCH（2925 不认 SEARCH）。
+    # select 返回如 [b'6 EXISTS']；拿不到数时再试 STATUS。
+    status, data = server.select(folder)
+    if status != "OK":
+        raise Exception(f"无法选择文件夹 {folder}: {data}")
+    for item in data or []:
+        raw = item if isinstance(item, bytes) else str(item).encode()
+        m = re.search(rb"(\\d+)\\s+EXISTS", raw)
+        if m:
+            return int(m.group(1))
+    status, data = server.status(folder, "(MESSAGES)")
+    if status == "OK" and data:
+        raw = data[0] if isinstance(data[0], bytes) else str(data[0]).encode()
+        m = re.search(rb"MESSAGES\\s+(\\d+)", raw)
+        if m:
+            return int(m.group(1))
+    raise Exception(f"无法从 select/STATUS 取邮件数: {data}")
+
+
+'''
+    if "def monitor_email" not in src:
+        print("补丁停：找不到 def monitor_email，一处都没改。")
+        sys.exit(1)
+    src = src.replace("def monitor_email", helpers + "def monitor_email", 1)
+
+# 4) 兼容：把 IDLE+SEARCH 的监听改成轮询。
+#    2925 不支持 SEARCH，新浪会断 IDLE，轮询只用 SELECT 取数 + FETCH 取信，
+#    每 60 秒查一次，连接断了就重连。
+if "轮询查新邮件" not in src:
+    start = src.find("def idle_mail_listener")
+    end = src.find("\ndef main():", start)
+    if start < 0 or end < 0:
+        print("补丁停：找不到 idle_mail_listener/main 边界，一处都没改。")
+        sys.exit(1)
+    listener = '''def idle_mail_listener(email_config, folder):
+    # 兼容版：轮询查新邮件，不用 IDLE、不用 SEARCH。
+    # 2925 的 IMAP 不认 SEARCH，新浪会把 IDLE 连接断开，
+    # 所以每 60 秒 SELECT 一次取邮件数，多了就 FETCH 新信；连接断了就重连。
+    config = load_config()
+    RETRY_LIMIT = config.RETRY_LIMIT
+    RETRY_DELAY = config.RETRY_DELAY
+    RETRY_PAUSE = config.RETRY_PAUSE
+    POLL_INTERVAL = getattr(config, "POLL_INTERVAL", 60)
+    retry_count = 0
+    email_provider = 'gmail' if 'gmail.com' in email_config['EMAIL'] else 'other'
+
+    while True:
+        server = None
+        try:
+            server = imaplib2.IMAP4_SSL(email_config['IMAP_SERVER'], email_config['IMAP_SERVER_PORT'])
+            oauth_helper.imap_login(server, email_config)
+            logger.info(f"成功登录邮箱 {email_config['EMAIL']}")
+
+            _, folders = server.list()
+            actual_folder = get_folder_name(folders, folder, email_provider) or folder
+            last_count = _selected_count(server, actual_folder)
+            logger.info(f"成功选择文件夹: {actual_folder}，当前 {last_count} 封")
+
+            if email_config['EMAIL'] not in LOGIN_SUCCESS:
+                language = os.environ.get('LANGUAGE', 'Chinese')
+                if language == 'English':
+                    message = 'Successfully logged into mailbox ' + email_config['EMAIL']
+                else:
+                    message = '成功登录邮箱 ' + email_config['EMAIL']
+                LOGIN_SUCCESS.append(email_config['EMAIL'])
+                asyncio.run(send_telegram_message(message))
+
+            while True:
+                time.sleep(POLL_INTERVAL)
+                count = _selected_count(server, actual_folder)
+                retry_count = 0
+                if count > last_count:
+                    for num in range(last_count + 1, count + 1):
+                        try:
+                            fetch_email(server, str(num), email_config, actual_folder)
+                        except Exception as e:
+                            logger.error(f"取第 {num} 封信失败（跳过这封）: {e}")
+                    last_count = count
+                elif count < last_count:
+                    last_count = count
+        except Exception as e:
+            logger.error(f"{email_config['EMAIL']} 的 {folder} 文件夹轮询出错: {e}")
+            retry_count += 1
+        finally:
+            if server:
+                try:
+                    server.logout()
+                except Exception:
+                    pass
+
+        if retry_count >= RETRY_LIMIT:
+            final_message = f"{email_config['EMAIL']} 的 {folder} 文件夹重试次数达到上限。等待 {RETRY_PAUSE // 60} 分钟后重试。"
+            logger.error(final_message)
+            asyncio.run(send_telegram_message(final_message))
+            time.sleep(RETRY_PAUSE)
+            retry_count = 0
+        elif retry_count:
+            time.sleep(RETRY_DELAY)
+
+'''
+    src = src[:start] + listener + src[end:]
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：2 处登录改成 oauth_helper.imap_login")
+print("补丁已打：OAuth 登录 + 兼容轮询（SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -627,6 +759,11 @@ return 1
 fi
 if [ "$(grep -c "oauth_helper.imap_login" "$DIR/main.py")" -ne 2 ] || grep -q "server.login(email_config\['EMAIL'\], email_config\['PASSWORD'\])" "$DIR/main.py"; then
 echo "补丁后核对没过（应有 2 处新登录、0 处旧登录），已恢复备份。"
+cp "$bak" "$DIR/main.py" 2>/dev/null || true
+return 1
+fi
+if ! grep -q "_selected_count" "$DIR/main.py" || grep -q "server\.idle(" "$DIR/main.py" || grep -q "server\.search(" "$DIR/main.py"; then
+echo "补丁后核对没过（轮询函数缺失，或还剩 IDLE/SEARCH），已恢复备份。"
 cp "$bak" "$DIR/main.py" 2>/dev/null || true
 return 1
 fi
@@ -899,6 +1036,8 @@ if [ ! -x "$DIR/start.sh" ]; then
 echo "还没有启动脚本，先选 1 走一键部署，或者先写后台脚本。"
 return 1
 fi
+write_oauth_files || return 1
+patch_main_py || return 1
 echo "正在启动后台服务..."
 (cd "$DIR" && ./start.sh)
 sleep 3
@@ -957,6 +1096,8 @@ if [ ! -f "$CONFIG" ]; then
 echo "还没有 $CONFIG，先选 2 走配置向导。"
 return 1
 fi
+write_oauth_files || return 1
+patch_main_py || return 1
 local py="python3"
 [ -x "$VENV/bin/python" ] && py="$VENV/bin/python"
 echo "前台测试开始：TG 收到“登录成功”就说明通了，再给邮箱发封测试信看推不推。"
