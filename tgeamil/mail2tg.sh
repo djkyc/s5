@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mail2Telegram Serv00/Ct8 一键部署脚本By:djkyc（带菜单、一步一步提示）
+# Mail2Telegram Serv00 一键部署脚本（带菜单、一步一步提示）
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
 # 1. 把这个文件传到 Serv00 家目录，变成 ~/mail2tg.sh
@@ -415,7 +415,7 @@ cat > "$DIR/oauth_outlook.py" <<'OAUTH_OUTLOOK_EOF'
 
 Device-code flow (Microsoft identity platform, RFC 8628):
   1. This script asks Microsoft for a device code + short user code.
-  2. YOU open https://microsoft.com/devicelogin in your own browser,
+  2. YOU open https://www.microsoft.com/link in your own browser,
      enter that user code, sign in as the Outlook mailbox, and consent
      to the IMAP permission. The code is valid for 15 minutes.
   3. This script polls Microsoft until you finish, then saves the
@@ -435,7 +435,7 @@ Before running this, register your own app once in Microsoft Entra:
     needs. There is no client secret for a public client; never create
     one for this, and never paste any token/secret into a chat.
 
-Safety: only enter the user code on microsoft.com/devicelogin, in a
+Safety: only enter the user code on microsoft.com/link, in a
 browser you opened yourself, and only for the app name you just
 registered. A device code is as powerful as a login while it is live.
 
@@ -557,7 +557,7 @@ def main(argv):
         return 1
     print("")
     # 设备码页用微软返回的 verification_uri（Thunderbird 公开 ID 下就是 https://www.microsoft.com/link，用户实测这个地址输码能正常验证）。
-    _uri = dc.get("verification_uri", "https://microsoft.com/devicelogin")
+    _uri = dc.get("verification_uri", "https://www.microsoft.com/link")
     _code = dc["user_code"]
     # OSC 8 超链接（点一下在浏览器打开）+ OSC 52（请终端把用户码写进剪贴板）；不支持的终端会忽略转义。
     # 网址用亮绿粗体、用户码用亮黄粗体，显眼好找。
@@ -645,7 +645,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -2257,7 +2257,7 @@ async def _bind_finish(update, st):
     os.replace(tmp, path)
     _BIND_STATE.pop(str(update.effective_chat.id), None)
     if oauth:
-        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://microsoft.com/devicelogin 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")
+        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://www.microsoft.com/link 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")
     else:
         tip = (f"已记下：{email}（{_bind_provider_name(provider)}）。\n去 s13 上跑 tge，选 11，只输密码/授权码就完成了，不用再填地址。\n配好后在菜单里按 ▶️ 启动运行。")
     await update.message.reply_text(tip, reply_markup=_menu_keyboard())
@@ -2473,7 +2473,7 @@ if "菜单 v3" not in src:
                 parse_mode="HTML")''', 1)
     _old_outlook_tip = r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，按提示完成设备码授权（在浏览器里开 microsoft.com/devicelogin 输码）。\n授权完在菜单里按 ▶️ 启动运行。")'''
     if _old_outlook_tip in src:
-        src = src.replace(_old_outlook_tip, r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://microsoft.com/devicelogin 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")''', 1)
+        src = src.replace(_old_outlook_tip, r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://www.microsoft.com/link 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")''', 1)
     # 打上 v3 标记，下次 patch_main_py 开头就能跳过
     if "# 菜单 v1：机器人内菜单" in src:
         src = src.replace("# 菜单 v1：机器人内菜单", "# 菜单 v3：邮箱列表/邮件列表 8 封一页，v.cd 进机器人向导，Outlook 提示可点复制\n# 菜单 v1：机器人内菜单", 1)
@@ -2508,8 +2508,14 @@ if "重试提醒只发一次" not in src:
                 asyncio.run(send_telegram_message(final_message))
                 limit_notified = True
             time.sleep(RETRY_PAUSE)""", 1)
+# 14) Outlook 绑定提示里的设备码网址改成 https://www.microsoft.com/link（微软返回的 verification_uri 就是这个；devicelogin 那边输码会报“该代码无法工作”）。
+if "Outlook 提示用 microsoft.com/link" not in src:
+    _old = r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://microsoft.com/devicelogin 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")'''
+    if _old in src:
+        src = src.replace(_old, r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://www.microsoft.com/link 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")''', 1)
+    src += "\n# Outlook 提示用 microsoft.com/link\n"
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -2651,7 +2657,7 @@ if entry.get("use_oauth"):
     if not cid:
         print("这条 Outlook 待绑定没有 client ID，先在机器人里重新走一遍绑定向导填上。")
         sys.exit(1)
-    print("Outlook 走设备码授权：按提示在浏览器里开 microsoft.com/devicelogin 输码。")
+    print("Outlook 走设备码授权：按提示在浏览器里开 microsoft.com/link 输码。")
     r = subprocess.run([sys.executable, "oauth_outlook.py", entry["email"], cid], cwd=D)
     if r.returncode != 0:
         print("授权没成功，这条待绑定还留着，修好再来。")
@@ -3357,7 +3363,7 @@ setup_shortcut quiet || true
 UNINSTALLED=0
 while true; do
 echo ""
-echo "================ Mail2Telegram Serv00/Ct8 一键部署 ================"
+echo "================ Mail2Telegram Serv00 一键部署 ================"
 if [ "$UNINSTALLED" -eq 1 ]; then
 echo "提示：已删除清理，欢迎再次使用拉取命令重装"
 else
