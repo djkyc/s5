@@ -634,7 +634,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -1217,12 +1217,11 @@ if 'CommandHandler("rmmail"' not in src:
 
 if "/rmmail 3" not in src:
     old_help = '"/delok 1 1 7 确认删除")'
-    if old_help not in src:
-        print("补丁停：找不到帮助文本，一处都没改。")
-        sys.exit(1)
-    bs = chr(92)
-    new_help = '"/delok 1 1 7 确认删除' + bs + 'n"' + "\n" + '        "/rmmail 3 删 3 号邮箱的绑定（要再发 /rmmailok 确认）' + bs + 'n"' + "\n" + '        "/rmmailok 3 确认删绑定")'
-    src = src.replace(old_help, new_help, 1)
+    if old_help in src:
+        bs = chr(92)
+        new_help = '"/delok 1 1 7 确认删除' + bs + 'n"' + "\n" + '        "/rmmail 3 删 3 号邮箱的绑定（要再发 /rmmailok 确认）' + bs + 'n"' + "\n" + '        "/rmmailok 3 确认删绑定")'
+        src = src.replace(old_help, new_help, 1)
+    # 旧帮助文本找不到也没关系：cmd_start 可能已被菜单版替换，那里已有 /rmmail 说明
 
 
 # 7) 机器人里启停监听：菜单里的 ▶️/⏸️ 按钮用。
@@ -1783,8 +1782,29 @@ if "set_my_commands" not in src:
 ''' + old_log
     src = src.replace(old_log, new_log, 1)
 
+
+# 9) 修命令机器人线程里跑不起来：run_polling 要在有 event loop 的线程里跑，
+#    命令机器人跑在线程里，没有主线程的 loop，不先建一个会报
+#    There is no current event loop；信号处理也要关掉，不然 add_signal_handler
+#    在非主线程里也会报 set_wakeup_fd only works in main thread。
+#    这就是为什么之前 /ls /menu 发了没回、推送却正常：推送是普通请求，
+#    轮询线程每次启动都直接报错，30 秒重试一次，永远没开始收消息。
+if "stop_signals=None" not in src:
+    old_run = "            app.run_polling()"
+    if old_run not in src:
+        print("补丁停：找不到 app.run_polling()，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_run, "            # run_polling 要在有 event loop 的线程里跑：命令机器人跑在线程里，\n"
+        "            # 没有主线程的 loop，不先建一个会报 There is no current event loop；\n"
+        "            # 信号处理也要关掉，不然 add_signal_handler 在非主线程里也会报错。\n"
+        "            try:\n"
+        "                asyncio.set_event_loop(asyncio.new_event_loop())\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            app.run_polling(stop_signals=None)", 1)
+
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 修命令机器人线程轮询")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
