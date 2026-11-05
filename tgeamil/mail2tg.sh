@@ -68,6 +68,38 @@ y|Y|yes|YES) return 0;;
 esac
 }
 
+WATCHDOG_PREF="$HOME/.mail2tg-watchdog-default"
+
+ask_watchdog_remove() {
+# 看门狗“要不要去掉”只问这一次选择：记住上次的选择，下次直接回车就用它，
+# 没选过默认 n（留着）。返回 0 表示去掉看门狗。
+local def="n"
+if [ -f "$WATCHDOG_PREF" ]; then
+def=$(tr -d ' \n\r' < "$WATCHDOG_PREF" 2>/dev/null | head -c 1)
+case "$def" in y|n) ;; *) def="n";; esac
+fi
+local prompt="要不要同时把 crontab 看门狗也去掉？（去掉后它就不会在 5 分钟后又被拉起来）"
+if [ "$def" = "y" ]; then
+prompt="$prompt [Y/n，直接回车=去掉]"
+else
+prompt="$prompt [y/N，直接回车=留着]"
+fi
+local ans=""
+read -r -p "$prompt " ans || true
+case "$ans" in
+"") ans="$def";;
+y|Y|yes|YES) ans="y";;
+n|N|no|NO) ans="n";;
+*) ans="$def";;
+esac
+printf '%s' "$ans" > "$WATCHDOG_PREF" || true
+if [ "$ans" = "y" ]; then
+return 0
+else
+return 1
+fi
+}
+
 step_binexec() {
 echo "第 1 步：开启 Serv00 运行自有程序的权限"
 if command -v devil >/dev/null 2>&1; then
@@ -1374,7 +1406,7 @@ return 1
 fi
 echo "已经停掉了。"
 fi
-if ask_yes_no "要不要同时把 crontab 看门狗也去掉？（去掉后它就不会在 5 分钟后又被拉起来）"; then
+if ask_watchdog_remove; then
 remove_crontab
 echo "看门狗 crontab 已去掉。"
 else
