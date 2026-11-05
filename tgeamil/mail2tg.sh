@@ -634,7 +634,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -1846,8 +1846,512 @@ if "loop.run_until_complete(app.bot.set_my_commands" not in src:
         sys.exit(1)
     src = src.replace(old_err, '        except Exception as e:\n            logger.error(f"命令机器人出错，30 秒后重试：{e}")\n            try:\n                asyncio.set_event_loop(None)\n            except Exception:\n                pass\n            time.sleep(30)', 1)
 
+
+
+# 11) 菜单 v2：文件夹中文名、翻页、日志返回按钮、绑定向导、/help 说明、命令列表只留 /menu /help。
+# 11a) 文件夹名解析 + 中文显示
+if "_decode_imap_utf7" not in src:
+    old_parse = '''def _parse_list_folder_name(folder):
+    # LIST 行分隔符可能是 / . :，上游只认 "/" 会把整行当文件夹名。
+    # 不管分隔符是什么，取行里最后一个带引号的名字。
+    text = folder.decode(errors="replace") if isinstance(folder, bytes) else str(folder)
+    quoted = re.findall(r'"([^"]*)"', text)
+    if quoted:
+        return quoted[-1]
+    return text.rsplit(" ", 1)[-1].strip('"')'''
+    if old_parse not in src:
+        print("补丁停：找不到 _parse_list_folder_name，一处都没改。")
+        sys.exit(1)
+    new_parse = '''# 菜单 v2：文件夹中文名、翻页、绑定向导、/help 说明
+def _parse_list_folder_name(folder):
+    # LIST 行分隔符可能是 / . :，名字可能带引号也可能不带。
+    # 先取最后一个引号串之后的内容（没引号的名字，如 cock.li 的 "." Junk）；
+    # 后面没东西，再取最后一个带引号的名字（名字本身带引号的情况）。
+    text = folder.decode(errors="replace") if isinstance(folder, bytes) else str(folder)
+    idx = text.rfind('"')
+    if idx >= 0:
+        after = text[idx + 1:].strip()
+        if after:
+            return after.strip('"').strip()
+    quoted = re.findall(r'"([^"]*)"', text)
+    if quoted:
+        return quoted[-1]
+    return text.rsplit(" ", 1)[-1].strip('"')
+
+
+def _decode_imap_utf7(s):
+    # IMAP 文件夹名用的 modified UTF-7：&...- 里是 base64（, 代替 /），&- 就是 &。
+    import base64
+    out = []
+    i = 0
+    while i < len(s):
+        if s[i] == '&':
+            j = s.find('-', i)
+            if j == -1:
+                out.append(s[i:])
+                break
+            if j == i + 1:
+                out.append('&')
+                i = j + 1
+                continue
+            b64 = s[i + 1:j].replace(',', '/')
+            b64 += '=' * (-len(b64) % 4)
+            try:
+                out.append(base64.b64decode(b64).decode('utf-16-be'))
+            except Exception:
+                out.append(s[i:j + 1])
+            i = j + 1
+        else:
+            out.append(s[i])
+            i += 1
+    return ''.join(out)
+
+
+_FOLDER_CN = {
+    'INBOX': '收件箱', 'Inbox': '收件箱',
+    'Trash': '垃圾箱', 'Junk': '垃圾邮件', 'Spam': '垃圾邮件',
+    'Sent': '已发送', 'Drafts': '草稿箱', 'Archive': '归档',
+    'All Mail': '全部邮件', 'Starred': '已加星标', 'Important': '重要',
+}
+
+
+def _folder_display_name(name):
+    # 只改显示：先解 modified UTF-7，常用英文名翻成中文；选文件夹还用原名。
+    decoded = _decode_imap_utf7(name)
+    return _FOLDER_CN.get(decoded, decoded)'''
+    src = src.replace(old_parse, new_parse, 1)
+    # LIST 拿不到名字时（有的服务器格式怪），INBOX 一定有，先给它，别让文件夹页空着。
+    a = src.find("def _cmd_folders(server):")
+    b = src.find("def _cmd_resolve_folder(server, arg):", a)
+    if a < 0 or b < 0:
+        print("补丁停：找不到 _cmd_folders，一处都没改。")
+        sys.exit(1)
+    new_folders = '''def _cmd_folders(server):
+    status, folders = server.list()
+    if status != "OK":
+        raise Exception("取文件夹列表失败")
+    names = []
+    for f in folders or []:
+        name = _parse_list_folder_name(f)
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        # 有的服务器 LIST 拿不到名字（比如 cock.li 的格式），INBOX 一定有，先给它
+        names = ["INBOX"]
+    return names
+
+
+'''
+    src = src[:a] + new_folders + src[b:]
+# 11a-2) 文件夹列表按钮显示中文名，回调带上页码（第 1 页）
+old_btn = '            rows.append([InlineKeyboardButton(f"{name}", callback_data=f"fld:{midx}:{i}")])'
+if old_btn in src:
+    src = src.replace(old_btn, '            rows.append([InlineKeyboardButton(_folder_display_name(name), callback_data=f"fld:{midx}:{i}:1")])', 1)
+
+# 11b) 翻页：_cb_show_folder 加 page，view/del/delok 把 page 带回去
+def _replace_fn(src, start_marker, end_marker, new_text):
+    a = src.find(start_marker)
+    b = src.find(end_marker, a)
+    if a < 0 or b < 0:
+        print(f"补丁停：找不到 {start_marker}，一处都没改。")
+        sys.exit(1)
+    return src[:a] + new_text + src[b:]
+
+if "def _cb_show_folder(query, midx, fidx, page=1):" not in src:
+    src = _replace_fn(src, "async def _cb_show_folder(", "async def _cb_show_mail(", r'''async def _cb_show_folder(query, midx, fidx, page=1):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if total == 0:
+            await _cb_edit(query, f"{_folder_display_name(folder)} 里没有信。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")]]))
+            return
+        page = max(1, int(page))
+        pages = (total - 1) // 5 + 1
+        if page > pages:
+            page = pages
+        end = total - (page - 1) * 5
+        start = max(1, end - 4)
+        disp = _folder_display_name(folder)
+        text = f"{email_config['EMAIL']} / {disp}（共 {total} 封，第 {page}/{pages} 页，点一封查看/删除）："
+        rows = []
+        for num in range(end, start - 1, -1):
+            subject, sender, date = _cmd_fetch_header(server, num)
+            if subject is None:
+                subject = "(取不出来)"
+            rows.append([InlineKeyboardButton(f"{num}. {subject[:25]}", callback_data=f"view:{midx}:{fidx}:{num}:{page}")])
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton("⬅️ 上一页", callback_data=f"fld:{midx}:{fidx}:{page - 1}"))
+        if page < pages:
+            nav.append(InlineKeyboardButton("下一页 ➡️", callback_data=f"fld:{midx}:{fidx}:{page + 1}"))
+        if nav:
+            rows.append(nav)
+        rows.append([InlineKeyboardButton("↩️ 返回文件夹", callback_data=f"mb:{midx}")])
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"看信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+''')
+if "def _cb_show_mail(query, midx, fidx, seq, page=1):" not in src:
+    src = _replace_fn(src, "async def _cb_show_mail(", "async def _cb_del_confirm(", r'''async def _cb_show_mail(query, midx, fidx, seq, page=1):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号不对，这个文件夹现在共 {total} 封。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]))
+            return
+        got = _cmd_fetch_body(server, int(seq))
+        if got is None:
+            await _cb_edit(query, "这封信取不出来。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]))
+            return
+        subject, sender, date, body = got
+        text = f"主题：{subject}\n发件人：{sender}\n日期：{date}\n\n{body[:2500]}"
+        rows = [[InlineKeyboardButton("🗑️ 删除这封", callback_data=f"del:{midx}:{fidx}:{seq}:{page}")],
+                [InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"看信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+''')
+if "def _cb_del_confirm(query, midx, fidx, seq, page=1):" not in src:
+    src = _replace_fn(src, "async def _cb_del_confirm(", "async def _cb_del_execute(", r'''async def _cb_del_confirm(query, midx, fidx, seq, page=1):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号不对，这个文件夹现在共 {total} 封。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]))
+            return
+        subject, sender, date = _cmd_fetch_header(server, seq)
+        if subject is None:
+            subject, sender = "(取不到标题)", ""
+        text = (f"要删这封吗？\n{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}\n发件人：{sender}\n")
+        rows = [[InlineKeyboardButton("✅ 确认删除", callback_data=f"delok:{midx}:{fidx}:{seq}:{page}")],
+                [InlineKeyboardButton("❌ 取消", callback_data=f"fld:{midx}:{fidx}:{page}")]]
+        await _cb_edit(query, text, InlineKeyboardMarkup(rows))
+    except Exception as e:
+        await _cb_edit(query, f"删信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+''')
+if "def _cb_del_execute(query, midx, fidx, seq, page=1):" not in src:
+    src = _replace_fn(src, "async def _cb_del_execute(", "async def _cb_show_unbind(", r'''async def _cb_del_execute(query, midx, fidx, seq, page=1):
+    email_config, err = _cmd_mailbox(str(midx))
+    if err:
+        await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+        return
+    server = None
+    try:
+        server = _cmd_open(email_config)
+        folder, err = _cmd_resolve_folder(server, str(fidx))
+        if err:
+            await _cb_edit(query, err, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+            return
+        total = _selected_count(server, folder)
+        if seq < 1 or seq > total:
+            await _cb_edit(query, f"序号变了，现在共 {total} 封，没删。",
+                           InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]))
+            return
+        subject, sender, date = _cmd_fetch_header(server, seq)
+        if subject is None:
+            subject = "(取不到标题)"
+        server.store(str(seq), "+FLAGS", r"(\Deleted)")
+        server.expunge()
+        logger.info(f"主人删信：{email_config['EMAIL']} / {folder} 第 {seq} 封：{subject}")
+        await _cb_edit(query, f"删了：{email_config['EMAIL']} / {folder} 第 {seq} 封\n标题：{subject}",
+                       InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回", callback_data=f"fld:{midx}:{fidx}:{page}")]]))
+    except Exception as e:
+        await _cb_edit(query, f"删信失败：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回邮箱列表", callback_data="menu:ls")]]))
+    finally:
+        _cmd_close(server)
+
+
+''')
+
+# 11c) 日志页：去掉 imap 的调试噪音，按钮改成明确的“返回菜单”
+if "reader last 20 log messages" not in src:
+    src = _replace_fn(src, "async def _cb_show_logs(", "async def _cb_show_bind(", r'''async def _cb_show_logs(query):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail2tg.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except Exception as e:
+        await _cb_edit(query, f"读不到日志文件：{e}", InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")]]))
+        return
+    lines = [ln for ln in lines if "reader last 20 log messages" not in ln]
+    tail = "".join(lines[-25:])
+    tail = _redact_log_text(tail)
+    if len(tail) > 3500:
+        tail = tail[-3500:]
+    text = "📋 运行日志（最后 25 行）：\n" + (tail or "（日志还是空的）")
+    await _cb_edit(query, text, InlineKeyboardMarkup([[InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")]]))
+
+
+''')
+
+# 11d) 绑定向导：机器人里选类型、发地址，记到 pending_bind.json；密码那步去服务器菜单 11 只输密码。
+#      密码/授权码绝不能发到聊天里，所以向导到地址为止，不收密码。
+if "_BIND_PROVIDERS" not in src:
+    src = _replace_fn(src, "async def _cb_show_bind(", "async def on_callback(", r'''_BIND_PROVIDERS = [
+    ("gmail", "Gmail"),
+    ("qq", "QQ"),
+    ("163", "163"),
+    ("sina", "新浪"),
+    ("cockli", "cock.li"),
+    ("2925", "2925"),
+    ("outlook", "Outlook/Hotmail"),
+    ("custom", "自建/小众邮箱"),
+]
+_BIND_STATE = {}
+
+
+def _bind_imap_for(provider, email):
+    if provider == "gmail":
+        return "imap.gmail.com", 993, False
+    if provider == "qq":
+        return "imap.qq.com", 993, False
+    if provider == "163":
+        return "imap.163.com", 993, False
+    if provider == "sina":
+        dom = email.rsplit("@", 1)[-1].lower()
+        return {"sina.com": "imap.sina.com", "sina.cn": "imap.sina.cn",
+                "vip.sina.com": "imap.vip.sina.com", "vip.sina.cn": "imap.vip.sina.cn"}.get(dom, "imap.sina.com"), 993, False
+    if provider == "cockli":
+        return "mail.cock.li", 993, False
+    if provider == "2925":
+        return "imap.2925.com", 993, False
+    if provider == "outlook":
+        return "outlook.office365.com", 993, True
+    return "", 993, False
+
+
+def _bind_provider_name(code):
+    for c, n in _BIND_PROVIDERS:
+        if c == code:
+            return n
+    return code
+
+
+async def _cb_show_bind(query):
+    rows = []
+    for code, name in _BIND_PROVIDERS:
+        rows.append([InlineKeyboardButton(name, callback_data=f"bind:{code}")])
+    rows.append([InlineKeyboardButton("↩️ 返回菜单", callback_data="menu")])
+    await _cb_edit(query, "➕ 绑定邮箱\n选邮箱类型，然后按提示发邮箱地址；密码/授权码那步在服务器上完成（密码不能发到聊天里）。", InlineKeyboardMarkup(rows))
+
+
+async def _cb_bind_pick(query, code, chat_id):
+    if code == "cancel":
+        _BIND_STATE.pop(chat_id, None)
+        await _cb_show_menu(query)
+        return
+    _BIND_STATE[chat_id] = {"step": "email", "provider": code}
+    await _cb_edit(query, f"绑定邮箱：{_bind_provider_name(code)}\n请直接发邮箱地址（例如 name@example.com）。",
+                   InlineKeyboardMarkup([[InlineKeyboardButton("❌ 取消", callback_data="bind:cancel")]]))
+
+
+async def _bind_finish(update, st):
+    import json
+    provider = st["provider"]
+    email = st["email"]
+    if provider == "custom":
+        server, port, oauth = st.get("server", ""), st.get("port", 993), False
+    else:
+        server, port, oauth = _bind_imap_for(provider, email)
+    entry = {"provider": provider, "email": email, "imap_server": server,
+             "imap_port": port, "use_oauth": oauth,
+             "client_id": st.get("client_id", ""), "tenant": "consumers"}
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_bind.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            pending = json.load(f)
+        if not isinstance(pending, list):
+            pending = []
+    except Exception:
+        pending = []
+    pending = [p for p in pending if p.get("email") != email]
+    pending.append(entry)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(pending, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    _BIND_STATE.pop(str(update.effective_chat.id), None)
+    if oauth:
+        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，按提示完成设备码授权（在浏览器里开 microsoft.com/devicelogin 输码）。\n授权完在菜单里按 ▶️ 启动运行。")
+    else:
+        tip = (f"已记下：{email}（{_bind_provider_name(provider)}）。\n去 s13 上跑 tge，选 11，只输密码/授权码就完成了，不用再填地址。\n配好后在菜单里按 ▶️ 启动运行。")
+    await update.message.reply_text(tip, reply_markup=_menu_keyboard())
+
+
+async def on_text(update, context):
+    # 绑定向导的文字步骤（地址、服务器、端口、client ID）；不是向导进行中就不理。
+    if not update.message or not update.message.text:
+        return
+    try:
+        cid = str(update.effective_chat.id)
+    except Exception:
+        return
+    if cid != str(load_config().TELEGRAM_CHAT_ID):
+        return
+    st = _BIND_STATE.get(cid)
+    if not st:
+        return
+    text = update.message.text.strip()
+    step = st.get("step")
+    if step == "email":
+        if "@" not in text or "." not in text.rsplit("@", 1)[-1]:
+            await update.message.reply_text("地址看起来不对，重新发一下（例如 name@example.com）。")
+            return
+        st["email"] = text
+        if st["provider"] == "custom":
+            st["step"] = "server"
+            await update.message.reply_text("自建邮箱：请发 IMAP 服务器地址（例如 imap.example.com）。")
+        elif st["provider"] == "outlook":
+            st["step"] = "client_id"
+            await update.message.reply_text("Outlook：请发 Entra 应用的 client ID（在 entra.microsoft.com 注册后能看到的那串 ID，不是密码）。\n还没有注册的话，先去 entra.microsoft.com 注册一个应用再来。")
+        else:
+            await _bind_finish(update, st)
+        return
+    if step == "server":
+        st["server"] = text
+        st["step"] = "port"
+        await update.message.reply_text("请发 IMAP 端口，一般填 993。")
+        return
+    if step == "port":
+        try:
+            st["port"] = int(text)
+        except Exception:
+            await update.message.reply_text("端口要是数字，例如 993。")
+            return
+        await _bind_finish(update, st)
+        return
+    if step == "client_id":
+        st["client_id"] = text
+        await _bind_finish(update, st)
+        return
+
+
+''')
+# 路由：fld/view/del/delok 带页码（老按钮没页码时当第 1 页），加 bind 分支
+old_route = '''        elif kind == "fld" and len(parts) == 3:
+            await _cb_show_folder(q, int(parts[1]), int(parts[2]))
+        elif kind == "view" and len(parts) == 4:
+            await _cb_show_mail(q, int(parts[1]), int(parts[2]), int(parts[3]))
+        elif kind == "del" and len(parts) == 4:
+            await _cb_del_confirm(q, int(parts[1]), int(parts[2]), int(parts[3]))
+        elif kind == "delok" and len(parts) == 4:
+            await _cb_del_execute(q, int(parts[1]), int(parts[2]), int(parts[3]))'''
+if old_route in src:
+    src = src.replace(old_route, '''        elif kind == "fld" and len(parts) in (3, 4):
+            await _cb_show_folder(q, int(parts[1]), int(parts[2]), int(parts[3]) if len(parts) == 4 else 1)
+        elif kind == "view" and len(parts) in (4, 5):
+            await _cb_show_mail(q, int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) == 5 else 1)
+        elif kind == "del" and len(parts) in (4, 5):
+            await _cb_del_confirm(q, int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) == 5 else 1)
+        elif kind == "delok" and len(parts) in (4, 5):
+            await _cb_del_execute(q, int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4]) if len(parts) == 5 else 1)
+        elif kind == "bind" and len(parts) == 2:
+            await _cb_bind_pick(q, parts[1], str(update.effective_chat.id))''', 1)
+# 收向导文字：import 里加 MessageHandler、filters，注册里加 on_text
+if "MessageHandler" not in src:
+    old_imp = "from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler"
+    if old_imp not in src:
+        print("补丁停：找不到 telegram.ext import，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_imp, "from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters", 1)
+    old_reg = "            app.add_handler(CallbackQueryHandler(on_callback))"
+    if old_reg not in src:
+        print("补丁停：找不到 CallbackQueryHandler 注册，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_reg, old_reg + "\n            app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))", 1)
+
+# 11e) /help 改成使用说明（带示例，末尾署名），命令列表只留 /menu /help
+if "async def cmd_help" not in src:
+    help_fn = r'''async def cmd_help(update, context):
+    if not await _cmd_check_owner(update):
+        return
+    await update.message.reply_text(
+        "📮 Mail2Telegram 使用方法\n"
+        "机器人会自动把新邮件推到这里，只读，不会改邮箱里的信。\n"
+        "\n"
+        "点 /menu 打开菜单（推荐），也可以直接发命令：\n"
+        "/menu 打开菜单\n"
+        "/ls 看邮箱列表\n"
+        "/show 3 1 5 看 3 号邮箱 1 号文件夹最新 5 封\n"
+        "/read 3 1 7 看 3 号邮箱 1 号文件夹第 7 封全文\n"
+        "/del 3 1 7 删一封信（要再发 /delok 确认）\n"
+        "/rmmail 3 解绑 3 号邮箱（要再发 /rmmailok 确认）\n"
+        "\n"
+        "绑定新邮箱：在菜单里点 ➕ 绑定邮箱，按提示填地址；密码那步去服务器上完成。\n"
+        "加邮箱、改配置在服务器上跑 tge 选 2；看运行状态按菜单里的 ▶️/⏸️。\n"
+        "\n"
+        "By djkyc编写")
+
+
+'''
+    a = src.find("async def cmd_start")
+    if a < 0:
+        print("补丁停：找不到 cmd_start，一处都没改。")
+        sys.exit(1)
+    src = src[:a] + help_fn + src[a:]
+    old_help_reg = 'app.add_handler(CommandHandler("help", cmd_start))'
+    if old_help_reg not in src:
+        print("补丁停：找不到 help 注册，一处都没改。")
+        sys.exit(1)
+    src = src.replace(old_help_reg, 'app.add_handler(CommandHandler("help", cmd_help))', 1)
+# 命令列表只留 /menu /help（其余命令照样能打，只是菜单里不占位置）
+if 'BotCommand("ls", "邮箱列表")' in src:
+    a = src.find("app.bot.set_my_commands([")
+    b = src.find("]))", a)
+    if a < 0 or b < 0:
+        print("补丁停：找不到 set_my_commands，一处都没改。")
+        sys.exit(1)
+    new_cmds = '''app.bot.set_my_commands([
+                    BotCommand("menu", "打开菜单"),
+                    BotCommand("help", "使用方法"),
+                ]))'''
+    src = src[:a] + new_cmds + src[b + 3:]
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -1939,6 +2443,96 @@ case "$email" in
 *) echo "邮箱格式不对。"; return 1;;
 esac
 setup_outlook_oauth "$email"
+}
+
+
+# 完成机器人里待绑定的邮箱：机器人向导只填了类型和地址，这里只输密码/授权码（Outlook 走设备码）。
+complete_pending_bind() {
+  if [ ! -d "$DIR" ]; then echo "还没有 $DIR，先选 1 一键部署。"; return 1; fi
+  if [ ! -f "$DIR/pending_bind.json" ]; then echo "没有待绑定的邮箱。先在机器人里点 ➕ 绑定邮箱，按提示填好地址再来。"; return 1; fi
+  local py
+  py="$(mktemp "$DIR/.complete_bind.XXXXXX.py")" || return 1
+  cat > "$py" <<'PYEOF'
+import json, os, sys, subprocess, shutil, time, py_compile
+D = sys.argv[1]
+pend_path = os.path.join(D, "pending_bind.json")
+cfg_path = os.path.join(D, "config.py")
+try:
+    with open(pend_path, encoding="utf-8") as f:
+        pending = json.load(f)
+except Exception as e:
+    print(f"待绑定文件读不出来：{e}")
+    sys.exit(1)
+if not isinstance(pending, list) or not pending:
+    print("没有待绑定的邮箱。先在机器人里点 ➕ 绑定邮箱，按提示填好地址再来。")
+    sys.exit(0)
+print("待绑定的邮箱：")
+for i, p in enumerate(pending, 1):
+    print(f"  {i}) {p.get('email', '?')}（{p.get('provider', '')}，{p.get('imap_server', '')}）")
+sel = input("选一个编号（直接回车取消）：").strip()
+if not sel:
+    print("取消了。")
+    sys.exit(0)
+try:
+    idx = int(sel) - 1
+    entry = pending[idx]
+except Exception:
+    print("编号不对。")
+    sys.exit(1)
+sys.path.insert(0, D)
+import config as _cfg
+if any(e.get("EMAIL") == entry.get("email") for e in _cfg.EMAILS):
+    print(f"{entry.get('email')} 已经绑过了，这条待绑定删掉。")
+    pending.pop(idx)
+    with open(pend_path, "w", encoding="utf-8") as f:
+        json.dump(pending, f, ensure_ascii=False, indent=2)
+    sys.exit(0)
+if entry.get("use_oauth"):
+    cid = (entry.get("client_id") or "").strip()
+    if not cid:
+        print("这条 Outlook 待绑定没有 client ID，先在机器人里重新走一遍绑定向导填上。")
+        sys.exit(1)
+    print("Outlook 走设备码授权：按提示在浏览器里开 microsoft.com/devicelogin 输码。")
+    r = subprocess.run([sys.executable, "oauth_outlook.py", entry["email"], cid], cwd=D)
+    if r.returncode != 0:
+        print("授权没成功，这条待绑定还留着，修好再来。")
+        sys.exit(1)
+    new_entry = {"EMAIL": entry["email"], "PASSWORD": "", "IMAP_SERVER": entry["imap_server"], "IMAP_SERVER_PORT": entry.get("imap_port", 993), "USE_OAUTH": True, "OAUTH_TENANT": entry.get("tenant", "consumers"), "OAUTH_CLIENT_ID": cid}
+else:
+    pw = input("密码/授权码（输入时会显示）：").strip()
+    if not pw:
+        print("没填密码，取消了。")
+        sys.exit(0)
+    new_entry = {"EMAIL": entry["email"], "PASSWORD": pw, "IMAP_SERVER": entry["imap_server"], "IMAP_SERVER_PORT": entry.get("imap_port", 993)}
+bak = cfg_path + ".bak." + time.strftime("%Y%m%d%H%M%S")
+shutil.copy2(cfg_path, bak)
+emails = list(_cfg.EMAILS) + [new_entry]
+lines = ["EMAILS = ["]
+for e in emails:
+    lines.append("    {")
+    for k, v in e.items():
+        lines.append(f"        {k!r}: {v!r},")
+    lines.append("    },")
+lines.append("]")
+for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_JUNK_CHAT_ID", "RETRY_LIMIT", "RETRY_DELAY", "RETRY_PAUSE", "RECONNECT_INTERVAL", "POLL_INTERVAL"):
+    if hasattr(_cfg, name):
+        lines.append(f"{name} = {getattr(_cfg, name)!r}")
+tmp = cfg_path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+os.chmod(tmp, 0o600)
+py_compile.compile(tmp, doraise=True)
+os.replace(tmp, cfg_path)
+pending.pop(idx)
+with open(pend_path, "w", encoding="utf-8") as f:
+    json.dump(pending, f, ensure_ascii=False, indent=2)
+os.chmod(pend_path, 0o600)
+print(f"绑好了：{entry['email']}。去机器人里按 ▶️ 启动运行，新邮箱就开始推送了。")
+PYEOF
+  python3 "$py" "$DIR"
+  local rc=$?
+  rm -f "$py"
+  return $rc
 }
 
 # 选邮箱服务商，输出 host、port、密码提示到全局变量 P_HOST P_PORT P_HINT P_USE_OAUTH，失败返回 1
@@ -2321,6 +2915,7 @@ echo " 7) 查看状态和日志"
 echo " 8) 设置 / 检查看门狗 crontab"
 echo " 9) 一键卸载"
 echo " 10) Outlook OAuth 重新授权（令牌过期/被吊销时用）"
+echo " 11) 完成机器人待绑定（机器人里填好地址后，在这里只输密码/授权码）"
 echo " 0) 退出"
 read -r -p "输入序号: " choice || break
 case "$choice" in
@@ -2341,6 +2936,7 @@ pause
 8) setup_crontab; pause;;
 9) uninstall_service; pause;;
 10) reauthorize_outlook; pause;;
+11) complete_pending_bind; pause;;
 0)
 if [ "$UNINSTALLED" -eq 1 ]; then
 echo "退出。已经删除清理了，欢迎再次使用："
