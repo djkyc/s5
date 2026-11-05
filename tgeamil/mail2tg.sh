@@ -4,7 +4,7 @@
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
 # 1. 把这个文件传到 Serv00 家目录，变成 ~/mail2tg.sh
 # 2. chmod +x ~/mail2tg.sh
-# 3../mail2tg.sh
+# 3. ./mail2tg.sh
 # 4. 选 1 一键部署，按提示一步一步填
 #
 # 本脚本在主机上会产生的效果：
@@ -130,7 +130,7 @@ echo "mail2tg already running"
 exit 0
 fi
 cd "$HOME/mail2tg" || exit 1
-nohup./run.sh >> "$HOME/mail2tg/mail2tg.log" 2>&1 &
+nohup ./run.sh >> "$HOME/mail2tg/mail2tg.log" 2>&1 &
 echo "mail2tg started, log: $HOME/mail2tg/mail2tg.log"
 EOF
 cat > "$DIR/stop.sh" <<'EOF'
@@ -144,7 +144,7 @@ cat > "$WATCHDOG" <<'EOF'
 # Serv00 看门狗：代替 systemd，crontab 每 5 分钟和 @reboot 各跑一次
 if ! pgrep -f "mail2tg/main.py" >/dev/null 2>&1; then
 cd "$HOME/mail2tg" || exit 1
-nohup./run.sh >> "$HOME/mail2tg/mail2tg.log" 2>&1 &
+nohup ./run.sh >> "$HOME/mail2tg/mail2tg.log" 2>&1 &
 fi
 EOF
 chmod +x "$DIR/run.sh" "$DIR/start.sh" "$DIR/stop.sh" "$WATCHDOG"
@@ -349,7 +349,7 @@ echo "还没有启动脚本，先选 1 走一键部署，或者先写后台脚�
 return 1
 fi
 echo "正在启动后台服务..."
-(cd "$DIR" &&./start.sh)
+(cd "$DIR" && ./start.sh)
 sleep 3
 if is_running; then
 echo "启动成功，正在跑了。日志：$DIR/mail2tg.log"
@@ -458,7 +458,7 @@ uninstall_service() {
 echo "一键卸载会：停服务、去掉看门狗 crontab、删掉 ~/mail2tg、~/mail2tg-venv、~/check_mail2tg.sh。"
 echo "注意：这个脚本文件本身不会被删，想删手动 rm ~/mail2tg.sh。"
 read -r -p "确认卸载请输入 yes： " ans || true
-if [ "$ans"!= "yes" ]; then
+if [ "$ans" != "yes" ]; then
 echo "没输入 yes，取消卸载。"
 return 0
 fi
