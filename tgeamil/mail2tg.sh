@@ -290,9 +290,15 @@ def save_tokens(tokens):
 
 
 def xoauth2_string(email, access_token):
-    """Return the base64 XOAUTH2 initial response for one mailbox."""
+    """Return the raw XOAUTH2 initial-response bytes for one mailbox.
+
+    Raw bytes, NOT base64: imaplib and imaplib2 base64-encode whatever
+    authenticate()'s authobject returns, so returning base64 here would
+    double-encode it and the server rejects AUTHENTICATE with
+    'Command Argument Error'.
+    """
     raw = "user=%s\x01auth=Bearer %s\x01\x01" % (email, access_token)
-    return base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    return raw.encode("utf-8")
 
 
 def _post_token(tenant, data):
@@ -395,11 +401,10 @@ def imap_login(server, email_config):
             tenant=email_config.get("OAUTH_TENANT") or DEFAULT_TENANT,
             client_id=email_config.get("OAUTH_CLIENT_ID"),
         )
-        auth_str = xoauth2_string(email, token)
-        # imaplib/imaplib2: authenticate(mechanism, authobject).
-        # The callable receives the server challenge and must return
-        # the base64 XOAUTH2 response bytes.
-        server.authenticate("XOAUTH2", lambda _resp: auth_str.encode("ascii"))
+        # imaplib/imaplib2 base64-encode what authenticate()'s authobject
+        # returns, so pass the RAW XOAUTH2 bytes (xoauth2_string does NOT
+        # base64-encode). Returning base64 here double-encodes it.
+        server.authenticate("XOAUTH2", lambda _resp: xoauth2_string(email, token))
         return "xoauth2"
     server.login(email, email_config["PASSWORD"])
     return "password"
@@ -504,8 +509,7 @@ def test_imap(email, access_token):
     print("正在用新令牌试一次 IMAP 登录（outlook.office365.com:993）……")
     server = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
     try:
-        auth_str = xoauth2_string(email, access_token)
-        server.authenticate("XOAUTH2", lambda _resp: auth_str.encode("ascii"))
+        server.authenticate("XOAUTH2", lambda _resp: xoauth2_string(email, access_token))
         status, _ = server.select("INBOX")
         print("IMAP 测试：登录成功，INBOX 选择结果：%s" % status)
         if status != "OK":
@@ -552,9 +556,16 @@ def main(argv):
         print("要设备码失败：%s" % dc.get("error", dc))
         return 1
     print("")
-    print("第 2 步：在你自己的浏览器里打开：%s" % dc.get("verification_uri", "https://microsoft.com/devicelogin"))
-    print("输入这串用户码（15 分钟内有效）：%s" % dc["user_code"])
-    print("用 %s 这个账号登录并同意 IMAP 权限，应用名要和你刚注册的一致。" % email)
+    _uri = dc.get("verification_uri", "https://microsoft.com/devicelogin")
+    _code = dc["user_code"]
+    # OSC 8 超链接（点一下在浏览器打开）+ OSC 52（请终端把用户码写进剪贴板）；不支持的终端会忽略转义。
+    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (_uri, _uri))
+    try:
+        sys.stdout.write("\x1b]52;c;%s\x1b\\" % base64.b64encode(_code.encode("utf-8")).decode("ascii")); sys.stdout.flush()
+    except Exception:
+        pass
+    print("输入这串用户码（15 分钟内有效，已尝试自动复制到剪贴板）：%s" % _code)
+    print("用 %s 这个账号登录并同意 IMAP 权限。" % email)
     print("只在 microsoft.com/devicelogin 输码，别在别的页面输。")
     print("")
     print("第 3 步：等你授权完，本脚本自动去换令牌（按 Ctrl+C 可取消）……")
