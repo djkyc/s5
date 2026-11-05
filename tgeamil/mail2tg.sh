@@ -556,15 +556,18 @@ def main(argv):
         print("要设备码失败：%s" % dc.get("error", dc))
         return 1
     print("")
-    _uri = dc.get("verification_uri", "https://microsoft.com/devicelogin")
+    # 设备码页固定用 microsoft.com/devicelogin（微软返回的 verification_uri 有时是 www.microsoft.com/link，用户反馈那边的码不认）。
+    _uri = "https://microsoft.com/devicelogin"
     _code = dc["user_code"]
     # OSC 8 超链接（点一下在浏览器打开）+ OSC 52（请终端把用户码写进剪贴板）；不支持的终端会忽略转义。
-    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\" % (_uri, _uri))
+    # 网址用亮青粗体、用户码用亮黄粗体，显眼好找。
+    print("第 2 步：在你自己的浏览器里打开：\x1b]8;;%s\x1b\\\x1b[1;96m%s\x1b[0m\x1b]8;;\x1b\\" % (_uri, _uri))
+    print("网址（点不开就手动复制）：\x1b[1;96m%s\x1b[0m" % _uri)
     try:
         sys.stdout.write("\x1b]52;c;%s\x1b\\" % base64.b64encode(_code.encode("utf-8")).decode("ascii")); sys.stdout.flush()
     except Exception:
         pass
-    print("输入这串用户码（15 分钟内有效，已尝试自动复制到剪贴板）：%s" % _code)
+    print("输入这串用户码（15 分钟内有效，已尝试自动复制到剪贴板）：\x1b[1;93m%s\x1b[0m" % _code)
     print("用 %s 这个账号登录并同意 IMAP 权限。" % email)
     print("只在 microsoft.com/devicelogin 输码，别在别的页面输。")
     print("")
@@ -642,7 +645,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -737,6 +740,7 @@ if "轮询查新邮件 v3" not in src:
     RETRY_PAUSE = config.RETRY_PAUSE
     POLL_INTERVAL = getattr(config, "POLL_INTERVAL", 60)
     retry_count = 0
+    limit_notified = False  # 重试提醒只发一次：同一轮故障只通知一次，恢复后才重新通知
     last_count = None
     email_provider = 'gmail' if 'gmail.com' in email_config['EMAIL'] else 'other'
 
@@ -776,6 +780,7 @@ if "轮询查新邮件 v3" not in src:
             elif count < last_count:
                 last_count = count
             retry_count = 0
+            limit_notified = False
         except Exception as e:
             logger.error(f"{email_config['EMAIL']} 的 {folder} 文件夹轮询出错: {e}")
             retry_count += 1
@@ -789,7 +794,9 @@ if "轮询查新邮件 v3" not in src:
         if retry_count >= RETRY_LIMIT:
             final_message = f"{email_config['EMAIL']} 的 {folder} 文件夹重试次数达到上限。等待 {RETRY_PAUSE // 60} 分钟后重试。"
             logger.error(final_message)
-            asyncio.run(send_telegram_message(final_message))
+            if not limit_notified:
+                asyncio.run(send_telegram_message(final_message))
+                limit_notified = True
             time.sleep(RETRY_PAUSE)
             retry_count = 0
         elif retry_count:
@@ -2472,8 +2479,37 @@ if "菜单 v3" not in src:
         src = src.replace("# 菜单 v1：机器人内菜单", "# 菜单 v3：邮箱列表/邮件列表 8 封一页，v.cd 进机器人向导，Outlook 提示可点复制\n# 菜单 v1：机器人内菜单", 1)
     else:
         src += "\n# 菜单 v3：邮箱列表/邮件列表 8 封一页，v.cd 进机器人向导，Outlook 提示可点复制\n"
+# 13) 重试提醒只发一次：同一轮故障只通知一次，恢复后才重新通知。
+#     小众/自建邮箱爱断线，旧逻辑每 10 分钟就往 Telegram 发一次“重试次数达到上限”，刷屏。
+#     改成：第一次达到上限才发，之后只记日志；等邮箱恢复成功，下次再失败才重新发。
+if "重试提醒只发一次" not in src:
+    _old = """    retry_count = 0
+    last_count = None
+"""
+    if _old in src:
+        src = src.replace(_old, """    retry_count = 0
+    limit_notified = False  # 重试提醒只发一次：同一轮故障只通知一次，恢复后才重新通知
+    last_count = None
+""", 1)
+    _old = """                last_count = count
+            retry_count = 0
+        except Exception as e:"""
+    if _old in src:
+        src = src.replace(_old, """                last_count = count
+            retry_count = 0
+            limit_notified = False
+        except Exception as e:""", 1)
+    _old = """            logger.error(final_message)
+            asyncio.run(send_telegram_message(final_message))
+            time.sleep(RETRY_PAUSE)"""
+    if _old in src:
+        src = src.replace(_old, """            logger.error(final_message)
+            if not limit_notified:
+                asyncio.run(send_telegram_message(final_message))
+                limit_notified = True
+            time.sleep(RETRY_PAUSE)""", 1)
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -2622,7 +2658,8 @@ if entry.get("use_oauth"):
         sys.exit(1)
     new_entry = {"EMAIL": entry["email"], "PASSWORD": "", "IMAP_SERVER": entry["imap_server"], "IMAP_SERVER_PORT": entry.get("imap_port", 993), "USE_OAUTH": True, "OAUTH_TENANT": entry.get("tenant", "consumers"), "OAUTH_CLIENT_ID": cid}
 else:
-    pw = input("密码/授权码（输入时会显示）：").strip()
+    _label = "API Token" if entry.get("imap_server") == "smtp.mail.v.cd" else "密码/授权码"
+    pw = input(f"{_label}（输入时会显示）：").strip()
     if not pw:
         print("没填密码，取消了。")
         sys.exit(0)
@@ -2720,11 +2757,303 @@ case "$P_PORT" in
 ''|*[!0-9]*) echo "端口不是数字，跳过。"; return 1;;
 esac
 ;;
-9) P_HOST="smtp.mail.v.cd"; P_PORT="993"; P_HINT="v.cd 账号密码。IMAP 服务器 smtp.mail.v.cd:993 SSL（POP3 同主机 995，SMTP 同主机 465，机器人只用 IMAP）";;
+9) P_HOST="smtp.mail.v.cd"; P_PORT="993"; P_HINT="v.cd API Token（在 mail.v.cd/profile?tab=apiTokens 生成，不是登录密码）。IMAP 服务器 smtp.mail.v.cd:993 SSL（POP3 同主机 995，SMTP 同主机 465，机器人只用 IMAP）";;
 *) echo "没选对，跳过这一个。"; return 1;;
 esac
 return 0
 }
+# ---- SSH 邮箱管理（菜单 12）：添加 / 删除 / 修改邮箱，不用重填机器人信息 ----
+# 写出一次性 Python 助手（放 $DIR 下的隐藏临时文件，退出子菜单时删掉）。
+# 用法：python3 助手路径 DIR 操作 [参数...]
+#   list                      列出邮箱（编号 + 地址 + 服务器）
+#   get N                     取第 N 个邮箱地址
+#   is_oauth EMAIL            是 OAuth 返回 1，否则 0
+#   oauth_info EMAIL          打印 OAuth 的 client_id 和 tenant（各一行）
+#   add EMAIL HOST PORT USE_OAUTH CLIENT_ID TENANT
+#                             追加邮箱；密码邮箱在助手里用 input() 现输（可见），OAuth 不输密码
+#   delete EMAIL              删除邮箱（剩最后一个不让删）
+#   modify EMAIL 字段 [新值]   字段 PASSWORD/IMAP_SERVER/IMAP_SERVER_PORT；PASSWORD 在助手里现输
+_write_cfg_helper() {
+  local helper
+  helper=$(mktemp "$DIR/.cfg_edit.XXXXXX") || return 1
+  cat > "$helper" <<'PYEOF'
+import sys, os, time, shutil, py_compile, json
+D = sys.argv[1]
+op = sys.argv[2]
+cfg_path = os.path.join(D, "config.py")
+sys.path.insert(0, D)
+import config as _cfg
+
+def rewrite(emails):
+    bak = cfg_path + ".bak." + time.strftime("%Y%m%d%H%M%S")
+    shutil.copy2(cfg_path, bak)
+    lines = ["EMAILS = ["]
+    for e in emails:
+        lines.append("    {")
+        for k, v in e.items():
+            lines.append(f"        {k!r}: {v!r},")
+        lines.append("    },")
+    lines.append("]")
+    for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "TELEGRAM_JUNK_CHAT_ID", "RETRY_LIMIT", "RETRY_DELAY", "RETRY_PAUSE", "RECONNECT_INTERVAL", "POLL_INTERVAL"):
+        if hasattr(_cfg, name):
+            lines.append(f"{name} = {getattr(_cfg, name)!r}")
+    tmp = cfg_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o600)
+    py_compile.compile(tmp, doraise=True)
+    os.replace(tmp, cfg_path)
+
+if op == "list":
+    for i, e in enumerate(_cfg.EMAILS, 1):
+        print(f"{i}) {e.get('EMAIL')} ({e.get('IMAP_SERVER')}:{e.get('IMAP_SERVER_PORT')})" + (" [OAuth]" if e.get("USE_OAUTH") else ""))
+elif op == "get":
+    n = int(sys.argv[3])
+    if 1 <= n <= len(_cfg.EMAILS):
+        print(_cfg.EMAILS[n-1].get("EMAIL"))
+    else:
+        sys.exit(1)
+elif op == "is_oauth":
+    email = sys.argv[3]
+    for e in _cfg.EMAILS:
+        if e.get("EMAIL") == email:
+            print("1" if e.get("USE_OAUTH") else "0")
+            sys.exit(0)
+    sys.exit(1)
+elif op == "oauth_info":
+    email = sys.argv[3]
+    for e in _cfg.EMAILS:
+        if e.get("EMAIL") == email and e.get("USE_OAUTH"):
+            print(e.get("OAUTH_CLIENT_ID", ""))
+            print(e.get("OAUTH_TENANT", "consumers"))
+            sys.exit(0)
+    sys.exit(1)
+elif op == "add":
+    email = sys.argv[3]; host = sys.argv[4]; port = int(sys.argv[5])
+    use_oauth = sys.argv[6] == "1"
+    client_id = sys.argv[7] if len(sys.argv) > 7 else ""
+    tenant = sys.argv[8] if len(sys.argv) > 8 else "consumers"
+    if any(e.get("EMAIL") == email for e in _cfg.EMAILS):
+        print(f"{email} 已经绑过了。")
+        sys.exit(1)
+    if use_oauth:
+        new_entry = {"EMAIL": email, "PASSWORD": "", "IMAP_SERVER": host, "IMAP_SERVER_PORT": port, "USE_OAUTH": True, "OAUTH_TENANT": tenant, "OAUTH_CLIENT_ID": client_id}
+    else:
+        _label = "API Token" if host == "smtp.mail.v.cd" else "密码/授权码"
+        pw = input(f"{_label}（输入时会显示）：").strip()
+        if not pw:
+            print("没填密码，取消了。")
+            sys.exit(0)
+        new_entry = {"EMAIL": email, "PASSWORD": pw, "IMAP_SERVER": host, "IMAP_SERVER_PORT": port}
+    rewrite(list(_cfg.EMAILS) + [new_entry])
+    print(f"加好了：{email}")
+elif op == "delete":
+    email = sys.argv[3]
+    if len(_cfg.EMAILS) <= 1:
+        print("就剩这一个邮箱了，不能删光。")
+        sys.exit(1)
+    remaining = [e for e in _cfg.EMAILS if e.get("EMAIL") != email]
+    if len(remaining) == len(_cfg.EMAILS):
+        print(f"没找到 {email}。")
+        sys.exit(1)
+    rewrite(remaining)
+    tok_path = os.path.join(D, "oauth_tokens.json")
+    if os.path.exists(tok_path):
+        try:
+            with open(tok_path, encoding="utf-8") as f:
+                toks = json.load(f)
+            if isinstance(toks, dict) and email in toks:
+                del toks[email]
+                with open(tok_path, "w", encoding="utf-8") as f:
+                    json.dump(toks, f, ensure_ascii=False, indent=2)
+                print("这个邮箱的 OAuth 令牌也一起删了。")
+        except Exception as e:
+            print(f"OAuth 令牌文件没动成：{e}（不影响删除邮箱）")
+    print(f"删了绑定：{email}")
+elif op == "modify":
+    email = sys.argv[3]; field = sys.argv[4]
+    idx = None
+    for i, e in enumerate(_cfg.EMAILS):
+        if e.get("EMAIL") == email:
+            idx = i; break
+    if idx is None:
+        print(f"没找到 {email}。")
+        sys.exit(1)
+    emails = [dict(e) for e in _cfg.EMAILS]
+    if field == "PASSWORD":
+        _label = "API Token" if emails[idx].get("IMAP_SERVER") == "smtp.mail.v.cd" else "新密码/授权码"
+        pw = input(f"{_label}（输入时会显示）：").strip()
+        if not pw:
+            print("没填，取消了。")
+            sys.exit(0)
+        emails[idx]["PASSWORD"] = pw
+    elif field == "IMAP_SERVER":
+        emails[idx]["IMAP_SERVER"] = sys.argv[5]
+    elif field == "IMAP_SERVER_PORT":
+        emails[idx]["IMAP_SERVER_PORT"] = int(sys.argv[5])
+    else:
+        print("不支持的字段。")
+        sys.exit(1)
+    rewrite(emails)
+    print(f"改好了：{email} 的 {field}")
+else:
+    print("不支持的操作。")
+    sys.exit(1)
+PYEOF
+  echo "$helper"
+}
+
+# 后台服务在跑就重启一次，让删除/修改生效（监听线程拿的是旧配置快照，自己不会退出）。
+restart_if_running() {
+  if is_running; then
+    echo "正在重启后台服务，让改动生效…"
+    stop_service; start_service
+  else
+    echo "后台服务没在跑，改动已写进配置，下次启动生效。"
+  fi
+}
+
+# 用配置里存的 client ID 给指定 Outlook 邮箱重新做设备码授权（不用再填 client ID）。
+mailbox_reauth() {
+  local helper="$1" py="$2" email="$3"
+  local info cid tenant
+  info=$("$py" "$helper" "$DIR" oauth_info "$email") || { echo "这个邮箱不是 OAuth，无法重新授权。"; return 1; }
+  cid=$(printf '%s\n' "$info" | sed -n '1p')
+  tenant=$(printf '%s\n' "$info" | sed -n '2p')
+  [ -z "$tenant" ] && tenant="consumers"
+  if [ -z "$cid" ]; then echo "配置里没有 client ID，先在机器人里重新走一遍绑定向导。"; return 1; fi
+  write_oauth_files || return 1
+  patch_main_py || return 1
+  (cd "$DIR" && "$py" oauth_outlook.py "$email" "$cid" "$tenant")
+}
+
+mailbox_add() {
+  local helper="$1" py="$2"
+  pick_provider
+  local rc=$?
+  if [ "$rc" -eq 2 ]; then echo "取消添加。"; return 0; fi
+  if [ "$rc" -ne 0 ]; then echo "没选对，回到管理菜单。"; return 0; fi
+  local email=""
+  read -r -p "邮箱完整地址: " email || true
+  case "$email" in
+    *@*.*) ;;
+    *) echo "邮箱格式不对。"; return 1;;
+  esac
+  if [ "$P_USE_OAUTH" -eq 1 ]; then
+    if ! setup_outlook_oauth "$email"; then echo "OAuth 授权没做成，这个邮箱没加。"; return 1; fi
+  else
+    echo "提示：$P_HINT"
+  fi
+  "$py" "$helper" "$DIR" add "$email" "$P_HOST" "$P_PORT" "$P_USE_OAUTH" "$O_CLIENT_ID" "$O_TENANT"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then return "$rc"; fi
+  if is_running; then
+    echo "去机器人里按 ▶️ 启动运行，新邮箱就开始推送了。"
+  else
+    echo "后台服务没在跑，先选 4 启动后台，跑起来后去机器人里按 ▶️。"
+  fi
+  return 0
+}
+
+mailbox_delete() {
+  local helper="$1" py="$2"
+  echo "现在的邮箱："
+  "$py" "$helper" "$DIR" list || return 1
+  local sel=""
+  read -r -p "要删第几个（输入序号，0 取消）: " sel || true
+  [ "$sel" = "0" ] && { echo "取消了。"; return 0; }
+  case "$sel" in
+    ''|*[!0-9]*) echo "编号不对。"; return 1;;
+  esac
+  local email
+  email=$("$py" "$helper" "$DIR" get "$sel") || { echo "编号不对。"; return 1; }
+  if ! ask_yes_no "确定删掉 $email 吗？删了就不再收它的信（服务器上的信还在）"; then echo "取消了。"; return 0; fi
+  "$py" "$helper" "$DIR" delete "$email" || return 1
+  restart_if_running
+  return 0
+}
+
+mailbox_modify() {
+  local helper="$1" py="$2"
+  echo "现在的邮箱："
+  "$py" "$helper" "$DIR" list || return 1
+  local sel=""
+  read -r -p "要改第几个（输入序号，0 取消）: " sel || true
+  [ "$sel" = "0" ] && { echo "取消了。"; return 0; }
+  case "$sel" in
+    ''|*[!0-9]*) echo "编号不对。"; return 1;;
+  esac
+  local email
+  email=$("$py" "$helper" "$DIR" get "$sel") || { echo "编号不对。"; return 1; }
+  local is_oauth
+  is_oauth=$("$py" "$helper" "$DIR" is_oauth "$email") || { echo "找不到这个邮箱。"; return 1; }
+  echo "改 $email："
+  echo " 1) 改密码/授权码"
+  echo " 2) 改 IMAP 服务器"
+  echo " 3) 改 IMAP 端口"
+  if [ "$is_oauth" = "1" ]; then echo " 4) Outlook 重新授权（设备码）"; fi
+  echo " 0) 取消"
+  local m=""
+  read -r -p "输入序号: " m || true
+  case "$m" in
+    1)
+      if [ "$is_oauth" = "1" ]; then echo "Outlook 邮箱不用密码，改授权请选 4。"; return 1; fi
+      "$py" "$helper" "$DIR" modify "$email" PASSWORD || return 1
+      restart_if_running
+      ;;
+    2)
+      local ns=""
+      read -r -p "新 IMAP 服务器: " ns || true
+      [ -z "$ns" ] && { echo "没填，取消了。"; return 0; }
+      "$py" "$helper" "$DIR" modify "$email" IMAP_SERVER "$ns" || return 1
+      restart_if_running
+      ;;
+    3)
+      local np=""
+      read -r -p "新 IMAP 端口: " np || true
+      case "$np" in
+        ''|*[!0-9]*) echo "端口不是数字。"; return 1;;
+      esac
+      "$py" "$helper" "$DIR" modify "$email" IMAP_SERVER_PORT "$np" || return 1
+      restart_if_running
+      ;;
+    4)
+      if [ "$is_oauth" != "1" ]; then echo "没这个序号。"; return 1; fi
+      mailbox_reauth "$helper" "$py" "$email" || return 1
+      echo "重新授权好了，监听下次登录就用新令牌，不用重启。"
+      ;;
+    0) echo "取消了。"; return 0;;
+    *) echo "没这个序号。"; return 1;;
+  esac
+  return 0
+}
+
+manage_mailboxes() {
+  if [ ! -f "$DIR/config.py" ]; then echo "还没有配置，先选 1 一键部署。"; return 1; fi
+  local helper py
+  helper=$(_write_cfg_helper) || return 1
+  py="$VENV/bin/python"
+  [ -x "$py" ] || py="python3"
+  while true; do
+    echo ""
+    echo "---- 管理邮箱 ----"
+    echo " 1) 添加邮箱（Gmail/QQ/163/新浪/cock.li/2925/v.cd/Outlook/自建）"
+    echo " 2) 删除邮箱"
+    echo " 3) 修改邮箱（密码/服务器/端口/Outlook 重新授权）"
+    echo " 0) 返回主菜单"
+    local c=""
+    read -r -p "输入序号: " c || break
+    case "$c" in
+      1) mailbox_add "$helper" "$py";;
+      2) mailbox_delete "$helper" "$py";;
+      3) mailbox_modify "$helper" "$py";;
+      0) break;;
+      *) echo "没这个序号，重新选。";;
+    esac
+  done
+  rm -f "$helper"
+}
+
 
 configure_wizard() {
 echo "一步一步填，Token 和密码输入时会显示在屏幕上，填完后汇总里不会打印出来"
@@ -2794,7 +3123,11 @@ fi
 continue
 fi
 echo "密码提示：$P_HINT"
-read -r -p "密码 / 授权码（输入时会显示，输完按回车）: " pw || true
+if [ "$P_HOST" = "smtp.mail.v.cd" ]; then
+  read -r -p "API Token（输入时会显示，输完按回车）: " pw || true
+else
+  read -r -p "密码 / 授权码（输入时会显示，输完按回车）: " pw || true
+fi
 echo ""
 if [ -z "$pw" ]; then echo "密码没填，跳过这一个。"; continue; fi
 entries="$entries
@@ -3041,6 +3374,7 @@ echo " 8) 设置 / 检查看门狗 crontab"
 echo " 9) 一键卸载"
 echo " 10) Outlook OAuth 重新授权（令牌过期/被吊销时用）"
 echo " 11) 完成机器人待绑定（机器人里填好地址后，在这里只输密码/授权码）"
+echo " 12) 管理邮箱（添加 / 删除 / 修改邮箱，不用重填机器人）"
 echo " 0) 退出"
 read -r -p "输入序号: " choice || break
 case "$choice" in
@@ -3062,6 +3396,7 @@ pause
 9) uninstall_service; pause;;
 10) reauthorize_outlook; pause;;
 11) complete_pending_bind; pause;;
+12) manage_mailboxes; pause;;
 0)
 if [ "$UNINSTALLED" -eq 1 ]; then
 echo "退出。已经删除清理了，欢迎再次使用："
