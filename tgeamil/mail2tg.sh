@@ -240,11 +240,11 @@ return 0
 }
 
 configure_wizard() {
-echo "一步一步填，密码不会回显，也不会打印出来"
+echo "一步一步填，Token 和密码输入时会显示在屏幕上，填完后汇总里不会打印出来"
 echo "第 1 步：Telegram 机器人"
 echo " 先去 @BotFather 建机器人，拿到 Token；再去机器人私聊里发 /start，不然它给你发不了消息。"
 local token="" chat_id="" junk_id=""
-read -r -s -p "Bot Token（输入时不显示，输完按回车）: " token || true
+read -r -p "Bot Token（输入时会显示，输完按回车）: " token || true
 echo ""
 if [ -z "$token" ]; then echo "Token 没填，配置没写，停在这里了。"; return 1; fi
 case "$token" in
@@ -285,7 +285,7 @@ case "$email" in
 *) echo "邮箱格式不对，跳过这一个。"; continue;;
 esac
 echo "密码提示：$P_HINT"
-read -r -s -p "密码 / 授权码（输入时不显示，输完按回车）: " pw || true
+read -r -p "密码 / 授权码（输入时会显示，输完按回车）: " pw || true
 echo ""
 if [ -z "$pw" ]; then echo "密码没填，跳过这一个。"; continue; fi
 entries="$entries
@@ -415,6 +415,33 @@ echo "前台测试已退出。"
 return 0
 }
 
+setup_shortcut() {
+local quiet=0
+[ "$1" = "quiet" ] && quiet=1
+local src=""
+if [ -f "$HOME/mail2tg.sh" ]; then src="$HOME/mail2tg.sh";
+elif [ -f "$0" ]; then src="$0"; fi
+if [ -z "$src" ]; then [ "$quiet" -eq 0 ] && echo "找不到 mail2tg.sh 文件，快捷键 tge 没装上。"; return 1; fi
+mkdir -p "$HOME/bin" 2>/dev/null || return 1
+ln -sf "$src" "$HOME/bin/tge" 2>/dev/null || return 1
+chmod +x "$src" 2>/dev/null || true
+local rc=""
+for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+touch "$rc" 2>/dev/null || continue
+if ! grep -Fq 'export PATH="$HOME/bin:$PATH"' "$rc" 2>/dev/null; then
+echo 'export PATH="$HOME/bin:$PATH"' >> "$rc" || true
+fi
+done
+if [ -f "$HOME/.zshrc" ] && ! grep -Fq 'export PATH="$HOME/bin:$PATH"' "$HOME/.zshrc" 2>/dev/null; then
+echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc" || true
+fi
+if [ "$quiet" -eq 0 ]; then
+echo "快捷键已装好：退出后输入 tge 就能再进菜单。"
+echo "注意：当前这个终端要重登一次 SSH，或先跑 export PATH=\"\$HOME/bin:\$PATH\"，tge 才直接生效；也可以直接跑 ~/bin/tge。"
+fi
+return 0
+}
+
 one_click_deploy() {
 echo "================ 一键部署 ================"
 echo "按顺序走：权限 → Python → 拉代码装依赖 → 写后台脚本 → 填配置 → 启动"
@@ -422,6 +449,7 @@ step_binexec || { echo "一键部署停在第 1 步了。"; return 1;}
 step_python || { echo "一键部署停在第 2 步了。"; return 1;}
 step_install || { echo "一键部署停在第 3 步了。"; return 1;}
 write_helpers || { echo "一键部署停在写后台脚本了。"; return 1;}
+setup_shortcut || echo "快捷键 tge 没装上，不影响部署，退出后用 ./mail2tg.sh 也能进菜单。"
 configure_wizard || { echo "一键部署停在配置向导了，依赖和脚本已经在了，改好再选 2 重填就行。"; return 1;}
 echo "配置好了，下面选怎么启动："
 echo " 1) 先前台测试（推荐第一次，Ctrl+C 停）"
@@ -455,8 +483,8 @@ return 0
 }
 
 uninstall_service() {
-echo "一键卸载会：停服务、去掉看门狗 crontab、删掉 ~/mail2tg、~/mail2tg-venv、~/check_mail2tg.sh。"
-echo "注意：这个脚本文件本身不会被删，想删手动 rm ~/mail2tg.sh。"
+echo "一键卸载会：停服务、去掉看门狗 crontab、删掉 ~/mail2tg、~/mail2tg-venv、~/check_mail2tg.sh、~/bin/tge，以及本脚本 ~/mail2tg.sh 本身。"
+echo "注意：删完要重装，得重新下载 GitHub 那条。backups、s5.sh、muse2api 这些不相关的文件和目录不会动。"
 read -r -p "确认卸载请输入 yes： " ans || true
 if [ "$ans" != "yes" ]; then
 echo "没输入 yes，取消卸载。"
@@ -465,13 +493,17 @@ fi
 pkill -f "mail2tg/main.py" 2>/dev/null || true
 remove_crontab
 rm -rf "$DIR" "$VENV" "$WATCHDOG"
-echo "卸载完了。如果以后不用这些邮箱授权码了，记得去各邮箱后台吊销授权码 / 应用专用密码，删本地文件不等于吊销。"
+rm -f "$HOME/bin/tge"
+rm -f "$HOME/mail2tg.sh"
+echo "卸载完了，连本脚本 ~/mail2tg.sh 和快捷键 tge 也已删掉。如果以后不用这些邮箱授权码了，记得去各邮箱后台吊销授权码 / 应用专用密码，删本地文件不等于吊销。"
 return 0
 }
 
+setup_shortcut quiet || true
 while true; do
 echo ""
 echo "================ Mail2Telegram Serv00 一键部署 ================"
+echo "提示：退出后输入 tge 可再次呼出菜单"
 echo " 1) 一键部署（一步一步提示：权限 → 依赖 → 机器人 → 邮箱 → 启动）"
 echo " 2) 只填 / 改配置（重新走机器人 + 邮箱向导，旧配置会自动备份）"
 echo " 3) 前台测试运行（Ctrl+C 停止，不进后台）"
@@ -500,7 +532,7 @@ pause
 7) show_status; pause;;
 8) setup_crontab; pause;;
 9) uninstall_service; pause;;
-0) echo "退出。"; break;;
+0) echo "退出。以后输入 tge 可再次呼出菜单。"; break;;
 *) echo "没这个序号，重新选。";;
 esac
 done
