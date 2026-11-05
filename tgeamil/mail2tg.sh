@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Mail2Telegram Serv00 一键部署脚本（带菜单、一步一步提示）
+# By: djkyc
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
 # 1. 把这个文件传到 Serv00 家目录，变成 ~/mail2tg.sh
@@ -3364,6 +3365,7 @@ UNINSTALLED=0
 while true; do
 echo ""
 echo "================ Mail2Telegram Serv00 一键部署 ================"
+echo "一键部署脚本 By: djkyc"
 if [ "$UNINSTALLED" -eq 1 ]; then
 echo "提示：已删除清理，欢迎再次使用拉取命令重装"
 else
