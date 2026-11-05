@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mail2Telegram Serv00 一键部署脚本（带菜单、一步一步提示）
+# Mail2Telegram Serv00/Ct8 一键部署脚本（带菜单、一步一步提示）
 # By: djkyc
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
@@ -506,20 +506,35 @@ def _post(url, data):
 
 
 def test_imap(email, access_token):
-    """One real IMAP XOAUTH2 login, to prove the token/scope work."""
-    print("正在用新令牌试一次 IMAP 登录（outlook.office365.com:993）……")
-    server = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
-    try:
-        server.authenticate("XOAUTH2", lambda _resp: xoauth2_string(email, access_token))
-        status, _ = server.select("INBOX")
-        print("IMAP 测试：登录成功，INBOX 选择结果：%s" % status)
-        if status != "OK":
-            print("警告：登录通了，但选 INBOX 不是 OK，先看日志再决定要不要转后台。")
-    finally:
+    """Real IMAP XOAUTH2 login, to prove the token/scope work.
+    Retries up to 3 times: Microsoft personal-account IMAP often answers
+    'User is authenticated but not connected' once and then works."""
+    last_exc = None
+    for attempt in (1, 2, 3):
+        if attempt == 1:
+            print("正在用新令牌试一次 IMAP 登录（outlook.office365.com:993）……")
+        else:
+            print("正在用新令牌试第 %d 次 IMAP 登录……" % attempt)
+        server = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
         try:
-            server.logout()
-        except Exception:
-            pass
+            server.authenticate("XOAUTH2", lambda _resp: xoauth2_string(email, access_token))
+            status, _ = server.select("INBOX")
+            print("IMAP 测试：登录成功，INBOX 选择结果：%s" % status)
+            if status != "OK":
+                print("警告：登录通了，但选 INBOX 不是 OK，先看日志再决定要不要转后台。")
+            return
+        except Exception as e:
+            last_exc = e
+            print("IMAP 测试第 %d 次失败：%s" % (attempt, e))
+            if attempt < 3:
+                print("等 10 秒再试一次（微软那边偶尔一次连不上，重试就通）。")
+                time.sleep(10)
+        finally:
+            try:
+                server.logout()
+            except Exception:
+                pass
+    raise last_exc
 
 
 def main(argv):
