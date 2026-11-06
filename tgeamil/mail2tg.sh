@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mail2Telegram Serv00 一键部署脚本（带菜单、一步一步提示）
+# Mail2Telegram Serv00/Ct8 vps一键部署脚本（带菜单、一步一步提示）
 # By: djkyc
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
@@ -661,7 +661,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py" && grep -q "转发识别 Received 头" "$DIR/main.py" && grep -q "排版美化 验证码代码块" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -2530,8 +2530,29 @@ if "Outlook 提示用 microsoft.com/link" not in src:
     if _old in src:
         src = src.replace(_old, r'''        tip = (f"已记下：{email}（Outlook）。\n去 s13 上跑 tge，选 11，走设备码授权。\n授权时浏览器打开 https://www.microsoft.com/link 输码，用这个 Outlook 账号登录同意。\n授权完在菜单里按 ▶️ 启动运行。")''', 1)
     src += "\n# Outlook 提示用 microsoft.com/link\n"
+# 15) 转发识别 Received 头：Outlook 转发时 To/Delivered-To 写目标邮箱，原收件人只在 Received 头里，
+#     上游 get_forwarded_email_info 查不到。补一个从全部邮件头里找本机器人别的邮箱的识别，
+#     找到就把通知里的“新邮件来自”写成原邮箱，转发来源一眼能认出来。
+if "转发识别 Received 头" not in src:
+    _anchor = "def fetch_email(server, msg_num, email_config, folder_name, retry_count=0):"
+    if _anchor in src:
+        src = src.replace(_anchor, 'def _detect_forwarded_from(email_message, current_email):\n    """转发识别：如果邮件是被本机器人里别的邮箱转过来的，从邮件头里找出原邮箱。\n    Outlook 转发时 To/Delivered-To 写的是目标邮箱，原收件人只留在 Received 头里，\n    上游 get_forwarded_email_info 查不到，所以再扫一遍全部邮件头。"""\n    try:\n        cfg = load_config()\n    except Exception:\n        return None\n    others = []\n    for e in getattr(cfg, "EMAILS", []) or []:\n        addr = (e.get("EMAIL") or "").strip().lower()\n        if addr and addr != (current_email or "").strip().lower():\n            others.append(addr)\n    if not others:\n        return None\n    try:\n        headers = "\\n".join(f"{k}: {v}" for k, v in email_message.items())\n    except Exception:\n        return None\n    low = headers.lower()\n    for addr in others:\n        if addr in low:\n            return addr\n    return None\n\n\n' + _anchor, 1)
+    _old = "        original_recipient, original_sender = get_forwarded_email_info(email_message, email_config['EMAIL'])\n\n        if original_recipient and original_sender:\n            account_email = original_recipient\n            from_ = original_sender\n        else:\n            account_email = email_config['EMAIL']"
+    if _old in src:
+        src = src.replace(_old, "        original_recipient, original_sender = get_forwarded_email_info(email_message, email_config['EMAIL'])\n\n        if original_recipient and original_sender:\n            account_email = original_recipient\n            from_ = original_sender\n        else:\n            # 转发识别：To/Delivered-To 没写原收件人时，再从邮件头里找是不是由本机器人里别的邮箱转过来的。\n            account_email = _detect_forwarded_from(email_message, email_config['EMAIL']) or email_config['EMAIL']", 1)
+    src += "\n# 转发识别 Received 头\n"
+# 16) 排版美化 验证码代码块：正文多余空行压掉，验证码用 <code> 包起来，Telegram 里点一下就复制。
+#     上游 get_email_content 出来的 content 已经是 escape 过的纯文本，数字不受影响，直接在上面套 <code>。
+if "排版美化 验证码代码块" not in src:
+    _anchor = "def fetch_email(server, msg_num, email_config, folder_name, retry_count=0):"
+    if _anchor in src:
+        src = src.replace(_anchor, 'def _beautify_content(content):\n    """排版美化：正文里多余的空行压成最多一个，验证码用 <code> 包起来方便点按复制。"""\n    import re as _re\n    content = _re.sub(r"\\n{3,}", "\\n\\n", content)\n    content = _re.sub(r"(验证码[：:\\s]*)(\\d{4,8})", lambda m: m.group(1) + "<code>" + m.group(2) + "</code>", content)\n    content = _re.sub(r"(?m)^(\\d{4,8})$", lambda m: "<code>" + m.group(1) + "</code>", content)\n    return content\n\n\n' + _anchor, 1)
+    _old = "        content = get_email_content(email_message)"
+    if _old in src:
+        src = src.replace(_old, _old + "\n        content = _beautify_content(content)", 1)
+    src += "\n# 排版美化 验证码代码块\n"
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link + 转发识别 Received 头 + 排版美化 验证码代码块")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
