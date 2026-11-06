@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mail2Telegram Serv00/Ct8/Vps一键部署脚本（带菜单、一步一步提示）
+# Mail2Telegram Serv00 一键部署脚本（带菜单、一步一步提示）
 # By: djkyc
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
@@ -661,7 +661,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py" && grep -q "转发识别 Received 头" "$DIR/main.py" && grep -q "排版美化 验证码代码块" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py" && grep -q "转发识别 Received 头" "$DIR/main.py" && grep -q "排版美化 验证码代码块" "$DIR/main.py" && grep -q "发件人二次解码" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -2551,8 +2551,16 @@ if "排版美化 验证码代码块" not in src:
     if _old in src:
         src = src.replace(_old, _old + "\n        content = _beautify_content(content)", 1)
     src += "\n# 排版美化 验证码代码块\n"
+# 17) 发件人二次解码：上游 get_forwarded_email_info 检测到转发时，会把 from_ 盖回原始的、没解码过的
+#     From 头（比如 "Microsoft =?utf-8?b?...?="），通知里就直接露出编码原文。取正文前再解一次，
+#     已经解过的再解一次没变化，不影响正常邮件。
+if "发件人二次解码" not in src:
+    _old = "        content = get_email_content(email_message)"
+    if _old in src:
+        src = src.replace(_old, "        from_ = decode_header_string(from_)\n" + _old, 1)
+    src += "\n# 发件人二次解码\n"
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link + 转发识别 Received 头 + 排版美化 验证码代码块")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link + 转发识别 Received 头 + 排版美化 验证码代码块 + 发件人二次解码")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
@@ -2671,9 +2679,30 @@ if not isinstance(pending, list) or not pending:
 print("待绑定的邮箱：")
 for i, p in enumerate(pending, 1):
     print(f"  {i}) {p.get('email', '?')}（{p.get('provider', '')}，{p.get('imap_server', '')}）")
-sel = input("选一个编号（直接回车取消）：").strip()
+sel = input("选一个编号完成绑定（直接回车取消），或输 d+编号删除（比如 d2，d0 删全部）：").strip()
 if not sel:
     print("取消了。")
+    sys.exit(0)
+if sel.lower().startswith("d"):
+    _num = sel[1:].strip()
+    if _num == "0" or _num == "":
+        _emails = ", ".join(p.get("email", "?") for p in pending)
+        pending.clear()
+        with open(pend_path, "w", encoding="utf-8") as f:
+            json.dump(pending, f, ensure_ascii=False, indent=2)
+        print(f"已删除全部待绑定：{_emails}")
+        sys.exit(0)
+    try:
+        idx = int(_num) - 1
+        entry = pending[idx]
+    except Exception:
+        print("编号不对。")
+        sys.exit(1)
+    _email = entry.get("email", "?")
+    pending.pop(idx)
+    with open(pend_path, "w", encoding="utf-8") as f:
+        json.dump(pending, f, ensure_ascii=False, indent=2)
+    print(f"已删除待绑定：{_email}")
     sys.exit(0)
 try:
     idx = int(sel) - 1
