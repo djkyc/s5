@@ -5,7 +5,7 @@ curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgea
 ```
 ---
 ---
-
+# 重来一次方法：
 ```
 rm -f ~/mail2tg.sh
 curl -Ls "https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh?$(date +%s)" -o ~/mail2tg.sh
