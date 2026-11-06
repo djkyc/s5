@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mail2Telegram Serv00/Ct8 vps一键部署脚本（带菜单、一步一步提示）
+# Mail2Telegram Serv00/Ct8/Vps一键部署脚本（带菜单、一步一步提示）
 # By: djkyc
 #
 # 运行方法（不要用 bash <(curl...) 这种方式，提示输入会出问题）：
