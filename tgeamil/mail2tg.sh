@@ -661,7 +661,7 @@ return 0
 patch_main_py() {
 echo "给 main.py 打补丁：OAuth 登录 + 兼容轮询（不用 SEARCH/IDLE）+ Telegram 命令"
 if [ ! -f "$DIR/main.py" ]; then echo "没有 $DIR/main.py，先拉代码。"; return 1; fi
-if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py" && grep -q "转发识别 Received 头" "$DIR/main.py" && grep -q "排版美化 验证码代码块" "$DIR/main.py" && grep -q "发件人二次解码" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
+if grep -q "oauth_helper.imap_login" "$DIR/main.py" 2>/dev/null && grep -q "_selected_count" "$DIR/main.py" 2>/dev/null && grep -q "run_command_bot" "$DIR/main.py" 2>/dev/null && grep -q "轮询查新邮件 v3" "$DIR/main.py" 2>/dev/null && grep -q "def cmd_rmmail" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v1" "$DIR/main.py" 2>/dev/null && grep -q "stop_signals=None" "$DIR/main.py" 2>/dev/null && grep -q "loop.run_until_complete(app.bot.set_my_commands" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v2" "$DIR/main.py" 2>/dev/null && grep -q "菜单 v3" "$DIR/main.py" && grep -q "重试提醒只发一次" "$DIR/main.py" && grep -q "Outlook 提示用 microsoft.com/link" "$DIR/main.py" && grep -q "转发识别 Received 头" "$DIR/main.py" && grep -q "排版美化 验证码代码块" "$DIR/main.py" && grep -q "发件人二次解码" "$DIR/main.py" && grep -q "垃圾邮件默认发主聊天" "$DIR/main.py"; then echo "补丁已经打过了，跳过。"; return 0; fi
 local bak="$DIR/main.py.bak.$(date +%Y%m%d%H%M%S)"
 cp "$DIR/main.py" "$bak" || { echo "备份 main.py 失败，补丁没打。"; return 1; }
 if ! python3 - "$DIR" <<'PYEOF'
@@ -2559,8 +2559,19 @@ if "发件人二次解码" not in src:
     if _old in src:
         src = src.replace(_old, "        from_ = decode_header_string(from_)\n" + _old, 1)
     src += "\n# 发件人二次解码\n"
+# 18) 垃圾邮件默认发主聊天：上游 send_telegram_message 里，垃圾文件夹的信只有配了 TELEGRAM_JUNK_CHAT_ID 才发，
+#     没配就直接跳过（日志里那句“跳过垃圾邮件转发”）。验证码经常进垃圾箱，跳过就收不到。改成没配垃圾聊天 ID
+#     时默认发到主聊天 TELEGRAM_CHAT_ID，垃圾邮件也照样推过来。
+if "垃圾邮件默认发主聊天" not in src:
+    _old = "    if is_junk and (not hasattr(config, 'TELEGRAM_JUNK_CHAT_ID') or not config.TELEGRAM_JUNK_CHAT_ID):\n        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID 或为空，跳过垃圾邮件转发\")"
+    if _old in src:
+        src = src.replace(_old, "    if is_junk and (not hasattr(config, 'TELEGRAM_JUNK_CHAT_ID') or not config.TELEGRAM_JUNK_CHAT_ID):\n        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID，垃圾邮件默认发到主聊天\")", 1)
+    _old2 = "    TELEGRAM_CHAT_ID = config.TELEGRAM_JUNK_CHAT_ID if is_junk else config.TELEGRAM_CHAT_ID"
+    if _old2 in src:
+        src = src.replace(_old2, "    TELEGRAM_CHAT_ID = (config.TELEGRAM_JUNK_CHAT_ID if is_junk and getattr(config, 'TELEGRAM_JUNK_CHAT_ID', '') else config.TELEGRAM_CHAT_ID)", 1)
+    src += "\n# 垃圾邮件默认发主聊天\n"
 open(path, "w", encoding="utf-8").write(src)
-print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link + 转发识别 Received 头 + 排版美化 验证码代码块 + 发件人二次解码")
+print("补丁已打：OAuth 登录 + 兼容轮询 v3（每轮新建连接，SELECT 数信 + FETCH 取信，不用 SEARCH/IDLE）+ Telegram 命令（/ls /show /del /rmmail）+ 机器人内菜单（/menu）+ 命令机器人单 loop + 菜单 v2（文件夹中文名/翻页/绑定向导//help）+ 菜单 v3（邮箱列表/邮件列表 8 封一页、v.cd 进机器人向导、Outlook 提示可点复制）+ 重试提醒只发一次（同一轮故障只通知一次）+ Outlook 提示用 microsoft.com/link + 转发识别 Received 头 + 排版美化 验证码代码块 + 发件人二次解码 + 垃圾邮件默认发主聊天")
 PYEOF
 then
 echo "补丁失败，已恢复备份 $bak，main.py 没动。"
