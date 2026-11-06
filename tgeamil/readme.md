@@ -4,5 +4,17 @@
 curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh -o ~/mail2tg.sh && chmod +x ~/mail2tg.sh && ./mail2tg.sh
 ```
 ---
-<img width="760" height="812" alt="image" src="https://github.com/user-attachments/assets/cc9a3532-33d7-4d0c-b69d-2b2f52691f8d" />
-<img width="587" height="544" alt="image" src="https://github.com/user-attachments/assets/84fe81d4-bb41-41bc-8c22-a34cbdfe02dc" />
+---
+
+```
+rm -f ~/mail2tg.sh
+curl -Ls "https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh?$(date +%s)" -o ~/mail2tg.sh
+chmod +x ~/mail2tg.sh
+wc -l ~/mail2tg.sh
+sha256sum ~/mail2tg.sh
+```
+
+---
+<img width="500" height="800" alt="image" src="https://github.com/user-attachments/assets/cc9a3532-33d7-4d0c-b69d-2b2f52691f8d" />
+<img width="500" height="800" alt="image" src="https://github.com/user-attachments/assets/84fe81d4-bb41-41bc-8c22-a34cbdfe02dc" />
+<img width="1009" height="638" alt="image" src="https://github.com/user-attachments/assets/7edd434d-2036-43a4-a7cb-b6f8e1aed9b5" />
