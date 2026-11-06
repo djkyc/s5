@@ -1,11 +1,13 @@
-## tg接收email :gmail outlook qq 163 sina v.cd 自定义邮箱 可收取，删除邮件。
+# TgBot:接收Email :gmail outlook qq 163 sina v.cd 自定义邮箱 可收取，删除邮件。 
 
+* (outlook/hotmail建议用转发更好，原因是outlook官方的问题)
+* 
 ```bash
 curl -Ls https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh -o ~/mail2tg.sh && chmod +x ~/mail2tg.sh && ./mail2tg.sh
 ```
 ---
 ---
-# 重来一次方法：
+## 重来一次方法：
 ```
 rm -f ~/mail2tg.sh
 curl -Ls "https://raw.githubusercontent.com/djkyc/serv00-ct8/refs/heads/main/tgeamil/mail2tg.sh?$(date +%s)" -o ~/mail2tg.sh
