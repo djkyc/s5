@@ -2563,9 +2563,12 @@ if "发件人二次解码" not in src:
 #     没配就直接跳过（日志里那句“跳过垃圾邮件转发”）。验证码经常进垃圾箱，跳过就收不到。改成没配垃圾聊天 ID
 #     时默认发到主聊天 TELEGRAM_CHAT_ID，垃圾邮件也照样推过来。
 if "垃圾邮件默认发主聊天" not in src:
-    _old = "    if is_junk and (not hasattr(config, 'TELEGRAM_JUNK_CHAT_ID') or not config.TELEGRAM_JUNK_CHAT_ID):\n        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID 或为空，跳过垃圾邮件转发\")"
+    _old = "    if is_junk and (not hasattr(config, 'TELEGRAM_JUNK_CHAT_ID') or not config.TELEGRAM_JUNK_CHAT_ID):\n        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID 或为空，跳过垃圾邮件转发\")\n        return"
     if _old in src:
         src = src.replace(_old, "    if is_junk and (not hasattr(config, 'TELEGRAM_JUNK_CHAT_ID') or not config.TELEGRAM_JUNK_CHAT_ID):\n        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID，垃圾邮件默认发到主聊天\")", 1)
+    _old_broken = "        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID，垃圾邮件默认发到主聊天\")\n        return"
+    if _old_broken in src:
+        src = src.replace(_old_broken, "        logger.info(\"未设置 TELEGRAM_JUNK_CHAT_ID，垃圾邮件默认发到主聊天\")", 1)
     _old2 = "    TELEGRAM_CHAT_ID = config.TELEGRAM_JUNK_CHAT_ID if is_junk else config.TELEGRAM_CHAT_ID"
     if _old2 in src:
         src = src.replace(_old2, "    TELEGRAM_CHAT_ID = (config.TELEGRAM_JUNK_CHAT_ID if is_junk and getattr(config, 'TELEGRAM_JUNK_CHAT_ID', '') else config.TELEGRAM_CHAT_ID)", 1)
